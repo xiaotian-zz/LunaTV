@@ -260,6 +260,16 @@ export interface AdminConfig {
     // 最后检查时间
     lastCheckTime?: number;
   };
+  HomePageConfig?: {
+    showHeroBanner: boolean;             // 是否显示 Hero Banner 轮播
+    showContinueWatching: boolean;       // 是否显示继续观看
+    showUpcomingReleases: boolean;       // 是否显示即将上映
+    showHotMovies: boolean;              // 是否显示热门电影
+    showHotTvShows: boolean;             // 是否显示热门剧集
+    showNewAnime: boolean;               // 是否显示新番放送
+    showHotVariety: boolean;             // 是否显示热门综艺
+    showHotShortDramas: boolean;         // 是否显示热门短剧
+  };
 }
 
 export interface AdminConfigResult {

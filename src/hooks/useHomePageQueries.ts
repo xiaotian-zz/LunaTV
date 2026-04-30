@@ -98,13 +98,27 @@ export function useHomePageQueries(): HomePageQueriesResult {
     // 聚合数据
     const data: HomePageData = {
       hotMovies:
-        moviesResult.data?.code === 200 ? moviesResult.data.list : [],
-      hotTvShows: tvResult.data?.code === 200 ? tvResult.data.list : [],
+        moviesResult.data?.code === 200 && Array.isArray(moviesResult.data.list)
+          ? moviesResult.data.list
+          : [],
+      hotTvShows:
+        tvResult.data?.code === 200 && Array.isArray(tvResult.data.list)
+          ? tvResult.data.list
+          : [],
       hotVarietyShows:
-        varietyResult.data?.code === 200 ? varietyResult.data.list : [],
-      hotAnime: animeResult.data?.code === 200 ? animeResult.data.list : [],
-      hotShortDramas: shortDramasResult.data || [],
-      bangumiCalendar: bangumiResult.data || [],
+        varietyResult.data?.code === 200 &&
+        Array.isArray(varietyResult.data.list)
+          ? varietyResult.data.list
+          : [],
+      hotAnime:
+        animeResult.data?.code === 200 && Array.isArray(animeResult.data.list)
+          ? animeResult.data.list
+          : [],
+      hotShortDramas:
+        Array.isArray(shortDramasResult.data) ? shortDramasResult.data : [],
+      bangumiCalendar: Array.isArray(bangumiResult.data)
+        ? bangumiResult.data
+        : [],
     };
 
     // 聚合加载状态

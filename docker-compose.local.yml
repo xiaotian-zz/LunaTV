@@ -1,0 +1,34 @@
+services:
+  lunatv:
+    image: lunatv:local
+    container_name: lunatv
+    restart: on-failure
+    ports:
+      - '8111:3000'
+    environment:
+      - USERNAME=admin
+      - PASSWORD=123456
+      - NEXT_PUBLIC_STORAGE_TYPE=kvrocks
+      - KVROCKS_URL=redis://lunatv-kvrocks:6666
+      - NEXT_PUBLIC_DOUBAN_PROXY_TYPE=cmliussss-cdn-tencent
+      - NEXT_PUBLIC_DOUBAN_IMAGE_PROXY_TYPE=cmliussss-cdn-tencent
+    networks:
+      - lunatv-network
+    depends_on:
+      - lunatv-kvrocks
+
+  lunatv-kvrocks:
+    image: apache/kvrocks
+    container_name: lunatv-kvrocks
+    restart: unless-stopped
+    volumes:
+      - kvrocks-data:/var/lib/kvrocks
+    networks:
+      - lunatv-network
+
+networks:
+  lunatv-network:
+    driver: bridge
+
+volumes:
+  kvrocks-data:
