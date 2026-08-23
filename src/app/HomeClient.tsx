@@ -1,59 +1,54 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, no-console */
+/* eslint-disable react-hooks/exhaustive-deps, no-console */
 
 'use client';
 
+import { useQuery } from '@tanstack/react-query';
 import {
+  Calendar,
   ChevronRight,
   Film,
-  Tv,
-  Calendar,
-  Sparkles,
   Play,
+  Sparkles,
   Trash2,
+  Tv,
 } from 'lucide-react';
 import Link from 'next/link';
 import {
-  Suspense,
   useEffect,
-  useState,
-  useRef,
   useMemo,
   useReducer,
+  useRef,
+  useState,
   useTransition,
 } from 'react';
-import { useQuery, queryOptions } from '@tanstack/react-query';
 
+import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import { BangumiCalendarData } from '@/lib/bangumi.client';
+import { getDoubanDetails } from '@/lib/douban.client';
 import {
   cleanExpiredCache,
   clearRecommendsCache,
 } from '@/lib/shortdrama-cache';
-import { ShortDramaItem, ReleaseCalendarItem } from '@/lib/types';
-import { useClearFavoritesMutation } from '@/hooks/useFavoritesMutations';
-import { useClearRemindersMutation } from '@/hooks/useRemindersMutations';
-import { useHomePageQueries } from '@/hooks/useHomePageQueries';
-import { useTMDBLogos } from '@/hooks/useTMDBLogo';
-import { getDoubanDetails } from '@/lib/douban.client';
+import { ReleaseCalendarItem, ShortDramaItem } from '@/lib/types';
 import { DoubanItem } from '@/lib/types';
-import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
-import { CinematicLoadingFallback } from '@/components/CinematicLoadingFallback';
-import { useFavoritesQuery } from '@/hooks/useFavoritesQuery';
-import { usePlayRecordsQuery } from '@/hooks/usePlayRecordsQuery';
-import { useRemindersQuery } from '@/hooks/useRemindersQuery';
+import { useClearFavoritesMutation } from '@/hooks/useFavoritesMutations';
+import { useHomePageQueries } from '@/hooks/useHomePageQueries';
+import { useClearRemindersMutation } from '@/hooks/useRemindersMutations';
+import { useTMDBLogos } from '@/hooks/useTMDBLogo';
 import { useWatchingUpdatesQuery } from '@/hooks/useWatchingUpdates';
 
-import CapsuleSwitch from '@/components/CapsuleSwitch';
+import { CinematicLoadingFallback } from '@/components/CinematicLoadingFallback';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import ContinueWatching from '@/components/ContinueWatching';
 import HeroBanner from '@/components/HeroBanner';
 import PageLayout from '@/components/PageLayout';
 import ScrollableRow from '@/components/ScrollableRow';
 import SectionTitle from '@/components/SectionTitle';
 import ShortDramaCard from '@/components/ShortDramaCard';
-import SkeletonCard from '@/components/SkeletonCard';
 import { useSite } from '@/components/SiteProvider';
+import SkeletonCard from '@/components/SkeletonCard';
 import { TelegramWelcomeModal } from '@/components/TelegramWelcomeModal';
 import VideoCard from '@/components/VideoCard';
-import { ConfirmDialog } from '@/components/ConfirmDialog';
 
 // 🎯 优化：合并状态管理 - 使用 useReducer 减少重渲染
 interface HomeState {
@@ -347,7 +342,9 @@ function HomeClient({
     return dataToUse;
   }, [homeData?.hotShortDramas, state.hotShortDramas, homeFetching]);
 
-  const bangumiCalendarData = Array.isArray(homeData?.bangumiCalendar) ? homeData.bangumiCalendar : [];
+  const bangumiCalendarData = Array.isArray(homeData?.bangumiCalendar)
+    ? homeData.bangumiCalendar
+    : [];
 
   // 🚀 Memoize HeroBanner items to prevent unnecessary re-renders
   // HeroBanner uses React.memo, but items array is recreated on every render
@@ -912,20 +909,20 @@ function HomeClient({
 
       <div className='overflow-visible -mt-6 md:mt-0 pb-32 md:pb-safe-bottom'>
         {/* 欢迎横幅 - 现代化精简设计 */}
-        <div className='mb-6 relative overflow-hidden rounded-xl bg-linear-to-r from-blue-500/90 via-purple-500/90 to-pink-500/90 backdrop-blur-sm shadow-xl border border-white/20'>
+        <div className='mb-6 relative overflow-hidden rounded-xl bg-[#d7f5e8]/90 backdrop-blur-sm shadow-xl border border-white/20'>
           <div className='relative p-4 sm:p-5'>
-            {/* 动态渐变背景 */}
-            <div className='absolute inset-0 bg-linear-to-br from-white/5 via-transparent to-black/5'></div>
+            {/* 纯色背景 - 白色稍带绿 #d7f5e8 */}
+            <div className='absolute inset-0 bg-[#d7f5e8]/40 dark:bg-[#d7f5e8]/25'></div>
 
             <div className='relative z-10 flex items-center justify-between gap-4'>
               <div className='flex-1 min-w-0'>
-                <h2 className='text-lg sm:text-xl font-bold text-white mb-1 flex items-center gap-2 flex-wrap'>
+                <h2 className='text-lg sm:text-xl font-bold text-[#009873] mb-1 flex items-center gap-2 flex-wrap'>
                   <span>
                     {greeting}
                     {username && '，'}
                   </span>
                   {username && (
-                    <span className='text-yellow-300 font-semibold'>
+                    <span className='text-[#009873] font-semibold'>
                       {username}
                     </span>
                   )}
@@ -933,7 +930,9 @@ function HomeClient({
                     👋
                   </span>
                 </h2>
-                <p className='text-sm text-white/90'>发现更多精彩影视内容 ✨</p>
+                <p className='text-sm text-[#009873]/90'>
+                  发现更多精彩影视内容{' '}
+                </p>
               </div>
 
               {/* 装饰图标 - 更小更精致 */}

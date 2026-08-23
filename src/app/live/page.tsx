@@ -1,11 +1,12 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment, @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, no-console, @next/next/no-img-element */
+/* eslint-disable react-hooks/exhaustive-deps, no-console, @next/next/no-img-element */
 
 'use client';
 
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
-
+import { Box,Tab, Tabs } from '@mui/material';
 import Hls from 'hls.js';
 import {
+  ChevronDown,
+  ChevronUp,
   Heart,
   Menu,
   Radio,
@@ -13,14 +14,11 @@ import {
   Search,
   Tv,
   X,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Tabs, Tab, Box } from '@mui/material';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
 import { debounce } from '@/lib/channel-search';
-import { isMobile, isTablet, isSafari, devicePerformance } from '@/lib/utils';
 import {
   deleteFavorite,
   generateStorageKey,
@@ -29,12 +27,13 @@ import {
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { parseCustomTimeFormat } from '@/lib/time';
+import { devicePerformance,isMobile, isSafari } from '@/lib/utils';
+import { useInView } from '@/hooks/useInView';
+import { useLiveSync } from '@/hooks/useLiveSync';
+import { useTabsDragScroll } from '@/hooks/useTabsDragScroll';
 
 import EpgScrollableRow from '@/components/EpgScrollableRow';
 import PageLayout from '@/components/PageLayout';
-import { useLiveSync } from '@/hooks/useLiveSync';
-import { useTabsDragScroll } from '@/hooks/useTabsDragScroll';
-import { useInView } from '@/hooks/useInView';
 
 // 扩展 HTMLVideoElement 类型以支持 hls 和 flv 属性
 declare global {
@@ -1240,7 +1239,8 @@ function LivePageClient() {
                   const parent = target.parentElement;
                   if (parent && !parent.querySelector('.fallback-icon')) {
                     const fallback = document.createElement('div');
-                    fallback.className = 'fallback-icon relative w-full h-full flex items-center justify-center';
+                    fallback.className =
+                      'fallback-icon relative w-full h-full flex items-center justify-center';
                     fallback.innerHTML = `
                       <svg class="w-5 h-5 text-red-500" fill="currentColor" viewBox="0 0 20 20">
                         <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z" />
@@ -1896,6 +1896,11 @@ function LivePageClient() {
       // 浏览器特殊优化
       liveDurationInfinity: false, // 源码默认，Safari兼容
 
+      // v1.7.0 新增：直播源连续 N 次刷新播放列表无变化时判定为假死，抛出 PLAYLIST_UNCHANGED_ERROR，避免无限轮询死频道
+      liveMaxUnchangedPlaylistRefresh: 5,
+      // v1.7.0 新增：appendBuffer 卡死超时兜底，避免播放静默卡住不报错
+      appendTimeout: 10000,
+
       // 移动设备网络优化 - 使用新的LoadPolicy配置
       ...(isMobile && {
         // 使用 fragLoadPolicy 替代旧的配置方式
@@ -2006,6 +2011,15 @@ function LivePageClient() {
       if (data.details === Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR) {
         console.error('Incompatible codecs error - fatal');
         setUnsupportedType('codec-incompatible');
+        setIsVideoLoading(false);
+        hls.destroy();
+        return;
+      }
+
+      // v1.7.0 新增：直播源连续多次刷新内容无变化（假死），hls.js 已耗尽内部重试预算，主动判定为不可用
+      if (data.details === Hls.ErrorDetails.PLAYLIST_UNCHANGED_ERROR) {
+        console.error('直播源假死（播放列表连续无变化），判定为不可用');
+        setUnsupportedType('channel-unavailable');
         setIsVideoLoading(false);
         hls.destroy();
         return;
