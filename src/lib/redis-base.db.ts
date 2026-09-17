@@ -99,6 +99,9 @@ export function createRedisClient(
     // 创建客户端配置
     const clientConfig: any = {
       url: config.url,
+      // redis v6 默认使用 RESP3 协议，但 Kvrocks/Pika 等兼容存储
+      // 仅支持 RESP2，因此显式指定 RESP2 以保持兼容
+      RESP: 2,
       socket: {
         // 重连策略：指数退避，最大30秒
         reconnectStrategy: (retries: number) => {
@@ -181,14 +184,15 @@ export abstract class BaseRedisStorage implements IStorage {
   // 用于迁移的 SCAN 辅助方法（非 public，不用于常规业务）
   private async scanKeys(pattern: string): Promise<string[]> {
     const keys = new Set<string>();
-    let cursor = 0;
+    // redis v6 中 SCAN 的 cursor 为字符串类型（如 "0"、"42"）
+    let cursor = '0';
     do {
       const result = await this.withRetry(() =>
         this.client.scan(cursor, { MATCH: pattern, COUNT: 100 }),
       );
-      cursor = result.cursor;
-      for (const key of result.keys) keys.add(key);
-    } while (cursor !== 0);
+      cursor = String(result.cursor);
+      for (const key of result.keys) keys.add(String(key));
+    } while (cursor !== '0');
     return Array.from(keys);
   }
 
@@ -204,7 +208,7 @@ export abstract class BaseRedisStorage implements IStorage {
     const val = await this.withRetry(() =>
       this.client.hGet(this.prHashKey(userName), key),
     );
-    return val ? (JSON.parse(val) as PlayRecord) : null;
+    return val ? (JSON.parse(ensureString(val)) as PlayRecord) : null;
   }
 
   async setPlayRecord(
@@ -247,7 +251,7 @@ export abstract class BaseRedisStorage implements IStorage {
     const val = await this.withRetry(() =>
       this.client.hGet(this.favHashKey(userName), key),
     );
-    return val ? (JSON.parse(val) as Favorite) : null;
+    return val ? (JSON.parse(ensureString(val)) as Favorite) : null;
   }
 
   async setFavorite(
@@ -294,7 +298,7 @@ export abstract class BaseRedisStorage implements IStorage {
     const val = await this.withRetry(() =>
       this.client.hGet(this.reminderHashKey(userName), key),
     );
-    return val ? (JSON.parse(val) as Reminder) : null;
+    return val ? (JSON.parse(ensureString(val)) as Reminder) : null;
   }
 
   async setReminder(
@@ -695,7 +699,7 @@ export abstract class BaseRedisStorage implements IStorage {
     const val = await this.withRetry(() =>
       this.client.get(this.adminConfigKey()),
     );
-    return val ? (JSON.parse(val) as AdminConfig) : null;
+    return val ? (JSON.parse(ensureString(val)) as AdminConfig) : null;
   }
 
   async setAdminConfig(config: AdminConfig): Promise<void> {
@@ -721,7 +725,7 @@ export abstract class BaseRedisStorage implements IStorage {
     const val = await this.withRetry(() =>
       this.client.hGet(this.skipHashKey(userName), this.skipField(source, id)),
     );
-    return val ? (JSON.parse(val) as EpisodeSkipConfig) : null;
+    return val ? (JSON.parse(ensureString(val)) as EpisodeSkipConfig) : null;
   }
 
   async setSkipConfig(
@@ -778,7 +782,7 @@ export abstract class BaseRedisStorage implements IStorage {
         this.skipField(source, id),
       ),
     );
-    return val ? (JSON.parse(val) as EpisodeSkipConfig) : null;
+    return val ? (JSON.parse(ensureString(val)) as EpisodeSkipConfig) : null;
   }
 
   async saveEpisodeSkipConfig(
@@ -896,7 +900,7 @@ export abstract class BaseRedisStorage implements IStorage {
         }
 
         try {
-          return JSON.parse(val);
+          return JSON.parse(ensureString(val));
         } catch (parseError) {
           console.warn(
             `${this.config.clientName} JSON解析失败，返回原字符串 (key: ${key}):`,
@@ -1024,7 +1028,11 @@ export abstract class BaseRedisStorage implements IStorage {
           if (!match) continue;
           const [, userName, field] = match;
           await this.withRetry(() =>
-            this.client.hSet(this.prHashKey(userName), field, raw),
+            this.client.hSet(
+              this.prHashKey(userName),
+              field,
+              ensureString(raw),
+            ),
           );
         }
         await this.withRetry(() => this.client.del(oldPrKeys));
@@ -1046,7 +1054,11 @@ export abstract class BaseRedisStorage implements IStorage {
           if (!match) continue;
           const [, userName, field] = match;
           await this.withRetry(() =>
-            this.client.hSet(this.favHashKey(userName), field, raw),
+            this.client.hSet(
+              this.favHashKey(userName),
+              field,
+              ensureString(raw),
+            ),
           );
         }
         await this.withRetry(() => this.client.del(oldFavKeys));
@@ -1070,7 +1082,11 @@ export abstract class BaseRedisStorage implements IStorage {
           if (!match) continue;
           const [, userName, field] = match;
           await this.withRetry(() =>
-            this.client.hSet(this.skipHashKey(userName), field, raw),
+            this.client.hSet(
+              this.skipHashKey(userName),
+              field,
+              ensureString(raw),
+            ),
           );
         }
         await this.withRetry(() => this.client.del(oldSkipKeys));
@@ -1092,7 +1108,11 @@ export abstract class BaseRedisStorage implements IStorage {
           if (!match) continue;
           const [, userName, field] = match;
           await this.withRetry(() =>
-            this.client.hSet(this.episodeSkipHashKey(userName), field, raw),
+            this.client.hSet(
+              this.episodeSkipHashKey(userName),
+              field,
+              ensureString(raw),
+            ),
           );
         }
         await this.withRetry(() => this.client.del(oldEsKeys));
@@ -1360,7 +1380,7 @@ export abstract class BaseRedisStorage implements IStorage {
           const loginStatsKey = `user_login_stats:${userName}`;
           const storedLoginStats = await this.client.get(loginStatsKey);
           if (storedLoginStats) {
-            const parsed = JSON.parse(storedLoginStats);
+            const parsed = JSON.parse(ensureString(storedLoginStats));
             loginStats = {
               loginCount: parsed.loginCount || 0,
               firstLoginTime: parsed.firstLoginTime || 0,
@@ -1445,7 +1465,7 @@ export abstract class BaseRedisStorage implements IStorage {
         const loginStatsKey = `user_login_stats:${userName}`;
         const storedLoginStats = await this.client.get(loginStatsKey);
         if (storedLoginStats) {
-          const parsed = JSON.parse(storedLoginStats);
+          const parsed = JSON.parse(ensureString(storedLoginStats));
           loginStats = {
             loginCount: parsed.loginCount || 0,
             firstLoginTime: parsed.firstLoginTime || 0,
@@ -1596,7 +1616,7 @@ export abstract class BaseRedisStorage implements IStorage {
       // 获取当前登入统计数据
       const currentStats = await this.client.get(loginStatsKey);
       const loginStats = currentStats
-        ? JSON.parse(currentStats)
+        ? JSON.parse(ensureString(currentStats))
         : {
             loginCount: 0,
             firstLoginTime: null,
@@ -1629,7 +1649,7 @@ export abstract class BaseRedisStorage implements IStorage {
     try {
       const key = `u:${userName}:emby-config`;
       const data = await this.client.get(key);
-      return data ? JSON.parse(data) : null;
+      return data ? JSON.parse(ensureString(data)) : null;
     } catch (error) {
       console.error(`获取用户 ${userName} Emby 配置失败:`, error);
       return null;
@@ -1686,7 +1706,7 @@ export abstract class BaseRedisStorage implements IStorage {
       // 解析并排序（按时间戳降序）
       const parsedLogs = logs
         .filter((log): log is string => log !== null)
-        .map((log) => JSON.parse(log))
+        .map((log) => JSON.parse(ensureString(log)))
         .sort(
           (a, b) =>
             new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
@@ -1765,7 +1785,7 @@ export abstract class BaseRedisStorage implements IStorage {
       const logs = await this.client.mGet(keys);
       return logs
         .filter((log): log is string => log !== null)
-        .map((log) => JSON.parse(log));
+        .map((log) => JSON.parse(ensureString(log)));
     } catch (error) {
       console.error('获取登录日志失败:', error);
       return [];
@@ -1793,7 +1813,7 @@ export abstract class BaseRedisStorage implements IStorage {
         const key = `login-log:${id}`;
         const log = await this.client.get(key);
         if (log) {
-          const parsed = JSON.parse(log);
+          const parsed = JSON.parse(ensureString(log));
           if (parsed.username === username) {
             return parsed;
           }

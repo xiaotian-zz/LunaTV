@@ -1,23 +1,20 @@
-import { FlatCompat } from '@eslint/eslintrc';
-import js from '@eslint/js';
+import prettier from 'eslint-config-prettier';
+// eslint-config-next@16 原生导出 flat config 数组，不能再用 FlatCompat 按旧格式加载
+import nextCoreWebVitals from 'eslint-config-next/core-web-vitals';
 import simpleImportSort from 'eslint-plugin-simple-import-sort';
 import unusedImports from 'eslint-plugin-unused-imports';
-import { dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-  recommendedConfig: js.configs.recommended,
-});
 
 export default [
   {
-    ignores: ['public/sw.js', 'public/workbox-*.js', 'node_modules/**', '.next/**'],
+    ignores: [
+      'public/sw.js',
+      'public/workbox-*.js',
+      'node_modules/**',
+      '.next/**',
+    ],
   },
-  ...compat.extends('next/core-web-vitals', 'prettier'),
+  ...nextCoreWebVitals,
+  prettier,
   {
     files: ['**/*.{js,jsx,ts,tsx}'],
     plugins: {
@@ -33,6 +30,15 @@ export default [
         'warn',
         { props: 'never', children: 'never' },
       ],
+      // react-hooks v6 新增的 React Compiler 时代规则仅作为编译优化建议，
+      // 存量代码大量使用 refs/setState 模式，重构风险高，降级为警告
+      'react-hooks/refs': 'warn',
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/set-state-in-render': 'warn',
+      'react-hooks/preserve-manual-memoization': 'warn',
+      'react-hooks/purity': 'warn',
+      'react-hooks/immutability': 'warn',
+      'react-hooks/static-components': 'warn',
       'unused-imports/no-unused-imports': 'warn',
       'unused-imports/no-unused-vars': [
         'warn',

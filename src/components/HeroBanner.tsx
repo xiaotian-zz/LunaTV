@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
 import {
@@ -11,15 +10,17 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { useEffect, useState, useRef, useCallback, memo } from 'react';
-import { useAutoplay } from './hooks/useAutoplay';
-import { useSwipeGesture } from './hooks/useSwipeGesture';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+
 // 🚀 TanStack Query Queries & Mutations
 import {
+  useClearTrailerUrlMutation,
   useRefreshedTrailerUrlsQuery,
   useRefreshTrailerUrlMutation,
-  useClearTrailerUrlMutation,
 } from '@/hooks/useHeroBannerQueries';
+
+import { useAutoplay } from './hooks/useAutoplay';
+import { useSwipeGesture } from './hooks/useSwipeGesture';
 
 interface BannerItem {
   id: string | number;
@@ -235,27 +236,11 @@ function HeroBanner({
     });
   }, [items, currentIndex]);
 
-  if (!items || items.length === 0) {
-    return null;
-  }
-
-  const currentItem = items[currentIndex];
-  const backgroundImage =
-    getHDBackdrop(currentItem.backdrop) || currentItem.poster;
-
-  // 🔍 调试日志
-  console.log('[HeroBanner] 当前项目:', {
-    title: currentItem.title,
-    hasBackdrop: !!currentItem.backdrop,
-    hasTrailer: !!currentItem.trailerUrl,
-    trailerUrl: currentItem.trailerUrl,
-    enableVideo,
-  });
-
   // 🎯 延迟加载：只预加载当前和相邻的 trailer URL
+  // 注意：必须位于 early return 之前，保证 Hook 调用顺序稳定
   useEffect(() => {
-    // 如果禁用了视频，不需要刷新 trailer
-    if (!enableVideo) {
+    // 如果禁用了视频或没有数据，不需要刷新 trailer
+    if (!enableVideo || !items || items.length === 0) {
       return;
     }
 
@@ -323,6 +308,23 @@ function HeroBanner({
     enableVideo,
     refreshedTrailerUrls,
   ]);
+
+  if (!items || items.length === 0) {
+    return null;
+  }
+
+  const currentItem = items[currentIndex];
+  const backgroundImage =
+    getHDBackdrop(currentItem.backdrop) || currentItem.poster;
+
+  // 🔍 调试日志
+  console.log('[HeroBanner] 当前项目:', {
+    title: currentItem.title,
+    hasBackdrop: !!currentItem.backdrop,
+    hasTrailer: !!currentItem.trailerUrl,
+    trailerUrl: currentItem.trailerUrl,
+    enableVideo,
+  });
 
   return (
     <div

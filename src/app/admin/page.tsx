@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, no-console, @typescript-eslint/no-non-null-assertion,react-hooks/exhaustive-deps,@typescript-eslint/no-empty-function */
+/* eslint-disable no-console,react-hooks/exhaustive-deps */
 
 'use client';
 
@@ -49,9 +49,9 @@ import {
   X,
 } from 'lucide-react';
 import { GripVertical, KeyRound, MessageSquare } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { pinyin } from 'pinyin-pro';
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
 
 import {
@@ -61,32 +61,32 @@ import {
 } from '@/lib/admin.types';
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 
+import PerformanceMonitor from '@/components/admin/PerformanceMonitor';
 import AIRecommendConfig from '@/components/AIRecommendConfig';
+import BilibiliConfig from '@/components/BilibiliConfig';
 import CacheManager from '@/components/CacheManager';
+import CustomAdFilterConfig from '@/components/CustomAdFilterConfig';
+import DanmuApiConfig from '@/components/DanmuApiConfig';
 import DataMigration from '@/components/DataMigration';
+import EmbyConfig from '@/components/EmbyConfig';
+import HomePageConfig from '@/components/HomePageConfig';
 import ImportExportModal from '@/components/ImportExportModal';
+import InviteCodeManager from '@/components/InviteCodeManager';
 import LoginLogsPanel from '@/components/LoginLogsPanel';
+// import ShortDramaConfig from '@/components/ShortDramaConfig'; // 暂时隐藏短剧API配置
+import DownloadConfig from '@/components/OfflineDownloadConfig';
+import { OIDCAuthConfig } from '@/components/OIDCAuthConfig';
+import PageLayout from '@/components/PageLayout';
 import SourceTestModule from '@/components/SourceTestModule';
 import { TelegramAuthConfig } from '@/components/TelegramAuthConfig';
-import { OIDCAuthConfig } from '@/components/OIDCAuthConfig';
-import TVBoxSecurityConfig from '@/components/TVBoxSecurityConfig';
 import TrustedNetworkConfig from '@/components/TrustedNetworkConfig';
-import DanmuApiConfig from '@/components/DanmuApiConfig';
+import TVBoxSecurityConfig from '@/components/TVBoxSecurityConfig';
 import {
   TVBoxTokenCell,
   TVBoxTokenModal,
 } from '@/components/TVBoxTokenManager';
-import YouTubeConfig from '@/components/YouTubeConfig';
-import BilibiliConfig from '@/components/BilibiliConfig';
-// import ShortDramaConfig from '@/components/ShortDramaConfig'; // 暂时隐藏短剧API配置
-import DownloadConfig from '@/components/OfflineDownloadConfig';
-import EmbyConfig from '@/components/EmbyConfig';
-import CustomAdFilterConfig from '@/components/CustomAdFilterConfig';
 import WatchRoomConfig from '@/components/WatchRoomConfig';
-import HomePageConfig from '@/components/HomePageConfig';
-import PerformanceMonitor from '@/components/admin/PerformanceMonitor';
-import InviteCodeManager from '@/components/InviteCodeManager';
-import PageLayout from '@/components/PageLayout';
+import YouTubeConfig from '@/components/YouTubeConfig';
 
 // 统一按钮样式系统
 const buttonStyles = {
@@ -8266,20 +8266,7 @@ const LiveSourceConfig = ({
     );
   };
 
-  if (!config) {
-    return (
-      <div className='flex justify-center items-center py-8'>
-        <div className='flex items-center gap-3 px-6 py-3 bg-linear-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200/50 dark:border-blue-700/50 shadow-md'>
-          <div className='animate-spin rounded-full h-5 w-5 border-2 border-blue-300 border-t-blue-600 dark:border-blue-700 dark:border-t-blue-400'></div>
-          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>
-            加载配置中...
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  // 📊 读取 CORS 统计数据
+  // 📊 读取 CORS 统计数据（Hook 必须位于 early return 之前，保证调用顺序稳定）
   const [corsStats, setCorsStats] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('live-cors-stats');
@@ -8293,6 +8280,19 @@ const LiveSourceConfig = ({
     }
     return { directCount: 0, proxyCount: 0, totalChecked: 0 };
   });
+
+  if (!config) {
+    return (
+      <div className='flex justify-center items-center py-8'>
+        <div className='flex items-center gap-3 px-6 py-3 bg-linear-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200/50 dark:border-blue-700/50 shadow-md'>
+          <div className='animate-spin rounded-full h-5 w-5 border-2 border-blue-300 border-t-blue-600 dark:border-blue-700 dark:border-t-blue-400'></div>
+          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+            加载配置中...
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   // 清除CORS统计和缓存
   const handleClearCorsCache = () => {

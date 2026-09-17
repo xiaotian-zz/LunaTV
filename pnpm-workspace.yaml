@@ -1,0 +1,2 @@
+patchedDependencies:
+  next@16.3.5: patches/next@16.3.5.patch
