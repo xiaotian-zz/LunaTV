@@ -185,7 +185,6 @@ export function useIsFavoritedQuery(
 | 容器启动（moontv-core + moontv-kvrocks） | ✅                |
 | 空表单点击登录 → "请输入用户名"          | ✅                |
 | 只填用户名 → "请输入访问密码"            | ✅                |
-| admin/admin1234 登录成功进入首页         | ✅                |
 | React hydration 正常（无原生提交刷新）   | ✅                |
 | 首页 `/api/favorites` 请求次数           | ✅ 70 → 2         |
 | 首页 `/api/reminders` 请求次数           | ✅ 61 → 1         |
