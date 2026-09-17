@@ -32,7 +32,7 @@ export const remindersQueryOptions = queryOptions({
     return data as Record<string, Reminder>;
   },
   staleTime: 5 * 60 * 1000, // 5分钟
-  gcTime: 10 * 60 * 1000,   // 10分钟
+  gcTime: 10 * 60 * 1000, // 10分钟
   retry: 1,
 });
 
@@ -93,7 +93,7 @@ export function useRemindersArrayQuery(options?: { enabled?: boolean }) {
         throw new Error(`Failed to fetch reminders: ${response.status}`);
       }
 
-      const data = await response.json() as Record<string, Reminder>;
+      const data = (await response.json()) as Record<string, Reminder>;
 
       // 转换为数组并排序
       const remindersArray = Object.entries(data).map(([key, reminder]) => ({
@@ -122,6 +122,10 @@ export function useRemindersArrayQuery(options?: { enabled?: boolean }) {
 /**
  * 检查是否已设置提醒
  *
+ * 复用全局共享的 ['reminders'] 缓存（整站仅发起一次请求），
+ * 通过 select 从全量提醒 Record 中派生单个条目的提醒状态。
+ * 提醒操作的乐观更新直接写入 ['reminders']，此 hook 即时联动。
+ *
  * @example
  * ```tsx
  * function ReminderButton({ source, id }: { source: string; id: string }) {
@@ -138,25 +142,11 @@ export function useRemindersArrayQuery(options?: { enabled?: boolean }) {
 export function useIsRemindedQuery(
   source: string,
   id: string,
-  options?: { enabled?: boolean }
+  options?: { enabled?: boolean },
 ) {
   return useQuery({
-    queryKey: ['reminders', 'check', source, id] as const,
-    queryFn: async () => {
-      const response = await fetch('/api/reminders');
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch reminders: ${response.status}`);
-      }
-
-      const data = await response.json() as Record<string, Reminder>;
-      const key = `${source}+${id}`;
-
-      return !!data[key];
-    },
-    staleTime: 5 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
-    retry: 1,
+    ...remindersQueryOptions,
     enabled: options?.enabled,
+    select: (data: Record<string, Reminder>) => !!data[`${source}+${id}`],
   });
 }

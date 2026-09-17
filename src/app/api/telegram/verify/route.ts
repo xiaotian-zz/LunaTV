@@ -1,12 +1,13 @@
-import { NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { NextResponse } from 'next/server';
 
+import { generateSignature } from '@/lib/auth';
+import { clearConfigCache } from '@/lib/config';
+import { db } from '@/lib/db';
 import {
   getTelegramToken,
   verifyAndConsumeTelegramToken,
 } from '@/lib/telegram-tokens';
-import { db } from '@/lib/db';
-import { clearConfigCache, getConfig } from '@/lib/config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -25,47 +26,8 @@ function generatePassword(length = 8): string {
   return password;
 }
 
-// 生成签名
-async function generateSignature(
-  data: string,
-  secret: string,
-): Promise<string> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-
-  const signature = await crypto.subtle.sign('HMAC', key, messageData);
-
-  return Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-// 生成认证Cookie（带签名）
-async function generateAuthCookie(
-  username: string,
-  role: 'owner' | 'admin' | 'user' = 'user',
-): Promise<string> {
-  const authData: Record<string, any> = { role };
-
-  if (username && process.env.PASSWORD) {
-    authData.username = username;
-    const signature = await generateSignature(username, process.env.PASSWORD);
-    authData.signature = signature;
-    authData.timestamp = Date.now();
-    authData.loginTime = Date.now();
-  }
-
-  return encodeURIComponent(JSON.stringify(authData));
-}
+// generateSignature 统一使用 @/lib/auth 中的实现
+// （签名覆盖 `${username}:${timestamp}`，防窃取后无限期重放）
 
 export async function GET(request: Request) {
   const requestId = Math.random().toString(36).substring(7);
@@ -289,30 +251,19 @@ export async function GET(request: Request) {
       }
     }
 
-    // 准备认证数据
-    console.log(
-      `[Verify ${requestId}] Preparing auth data for user:`,
-      username,
-    );
-    console.log(
-      `[Verify ${requestId}] PASSWORD env:`,
-      process.env.PASSWORD ? 'SET' : 'NOT SET',
-    );
-
     // 生成认证数据对象（不手动编码，让 Next.js 自动处理）
     const authData: Record<string, any> = { role: 'user' };
     if (username && process.env.PASSWORD) {
+      const timestamp = Date.now();
       authData.username = username;
-      const signature = await generateSignature(username, process.env.PASSWORD);
-      authData.signature = signature;
-      authData.timestamp = Date.now();
-      authData.loginTime = Date.now();
+      authData.signature = await generateSignature(
+        `${username}:${timestamp}`,
+        process.env.PASSWORD,
+      );
+      authData.timestamp = timestamp;
+      authData.loginTime = timestamp;
     }
     const authDataString = JSON.stringify(authData);
-    console.log(
-      `[Verify ${requestId}] Auth data string length:`,
-      authDataString.length,
-    );
 
     const expires = new Date();
     expires.setDate(expires.getDate() + 7); // 7天过期
@@ -340,12 +291,8 @@ export async function GET(request: Request) {
     console.log(`[Verify ${requestId}] ========== FINAL STATUS ==========`);
     console.log(`[Verify ${requestId}] Username:`, username);
     console.log(`[Verify ${requestId}] Is new user:`, isNewUser);
-    console.log(
-      `[Verify ${requestId}] Initial password:`,
-      isNewUser ? initialPassword : 'N/A',
-    );
+    // 安全：不打印初始密码与认证 cookie 内容（凭据类信息不入日志）
     console.log(`[Verify ${requestId}] Cookie expires:`, expires.toISOString());
-    console.log(`[Verify ${requestId}] Auth data:`, authDataString);
     console.log(`[Verify ${requestId}] ===================================`);
 
     // Create HTML response that sets cookies and redirects
@@ -377,14 +324,6 @@ export async function GET(request: Request) {
     console.log(
       `[Verify ${requestId}] Setting auth cookie via response.cookies.set()...`,
     );
-    console.log(`[Verify ${requestId}] Auth data string:`, authDataString);
-    console.log(`[Verify ${requestId}] Cookie settings:`, {
-      path: '/',
-      expires: expires.toISOString(),
-      sameSite: 'lax',
-      secure: isSecure,
-      httpOnly: false,
-    });
 
     response.cookies.set('user_auth', authDataString, {
       path: '/',

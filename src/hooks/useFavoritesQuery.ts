@@ -32,7 +32,7 @@ export const favoritesQueryOptions = queryOptions({
     return data as Record<string, Favorite>;
   },
   staleTime: 5 * 60 * 1000, // 5分钟
-  gcTime: 10 * 60 * 1000,   // 10分钟
+  gcTime: 10 * 60 * 1000, // 10分钟
   retry: 1,
 });
 
@@ -93,7 +93,7 @@ export function useFavoritesArrayQuery(options?: { enabled?: boolean }) {
         throw new Error(`Failed to fetch favorites: ${response.status}`);
       }
 
-      const data = await response.json() as Record<string, Favorite>;
+      const data = (await response.json()) as Record<string, Favorite>;
 
       // 转换为数组并排序
       const favoritesArray = Object.entries(data).map(([key, favorite]) => ({
@@ -118,6 +118,10 @@ export function useFavoritesArrayQuery(options?: { enabled?: boolean }) {
 /**
  * 检查是否已收藏
  *
+ * 复用全局共享的 ['favorites'] 缓存（整站仅发起一次请求），
+ * 通过 select 从全量收藏 Record 中派生单个条目的收藏状态。
+ * 收藏操作的乐观更新直接写入 ['favorites']，此 hook 即时联动。
+ *
  * @example
  * ```tsx
  * function FavoriteButton({ source, id }: { source: string; id: string }) {
@@ -134,25 +138,11 @@ export function useFavoritesArrayQuery(options?: { enabled?: boolean }) {
 export function useIsFavoritedQuery(
   source: string,
   id: string,
-  options?: { enabled?: boolean }
+  options?: { enabled?: boolean },
 ) {
   return useQuery({
-    queryKey: ['favorites', 'check', source, id] as const,
-    queryFn: async () => {
-      const response = await fetch('/api/favorites');
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch favorites: ${response.status}`);
-      }
-
-      const data = await response.json() as Record<string, Favorite>;
-      const key = `${source}+${id}`;
-
-      return !!data[key];
-    },
-    staleTime: 5 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
-    retry: 1,
+    ...favoritesQueryOptions,
     enabled: options?.enabled,
+    select: (data: Record<string, Favorite>) => !!data[`${source}+${id}`],
   });
 }

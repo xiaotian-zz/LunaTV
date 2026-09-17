@@ -1,48 +1,29 @@
-/* eslint-disable no-console,@typescript-eslint/no-explicit-any */
+/* eslint-disable no-console */
 import { NextRequest, NextResponse } from 'next/server';
 
+import { generateSignature } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
 
-// 生成签名
-async function generateSignature(
-  data: string,
-  secret: string
-): Promise<string> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  const signature = await crypto.subtle.sign('HMAC', key, messageData);
-
-  return Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 // 生成认证Cookie
 async function generateAuthCookie(
   username: string,
-  role: 'owner' | 'admin' | 'user'
+  role: 'owner' | 'admin' | 'user',
 ): Promise<string> {
   const authData: any = { role };
 
   if (username && process.env.PASSWORD) {
+    const timestamp = Date.now();
     authData.username = username;
-    const signature = await generateSignature(username, process.env.PASSWORD);
+    const signature = await generateSignature(
+      `${username}:${timestamp}`,
+      process.env.PASSWORD,
+    );
     authData.signature = signature;
-    authData.timestamp = Date.now();
-    authData.loginTime = Date.now();
+    authData.timestamp = timestamp;
+    authData.loginTime = timestamp;
   }
 
   return encodeURIComponent(JSON.stringify(authData));
@@ -55,7 +36,14 @@ export async function GET(request: NextRequest) {
     const code = searchParams.get('code');
     const state = searchParams.get('state');
     const error = searchParams.get('error');
-    console.log('[OIDC Callback] Params - code:', !!code, 'state:', !!state, 'error:', error);
+    console.log(
+      '[OIDC Callback] Params - code:',
+      !!code,
+      'state:',
+      !!state,
+      'error:',
+      error,
+    );
 
     // 使用环境变量SITE_BASE，或从请求头获取真实的origin
     let origin: string;
@@ -77,14 +65,14 @@ export async function GET(request: NextRequest) {
     if (error) {
       console.error('OIDC认证错误:', error);
       return NextResponse.redirect(
-        new URL(`/login?error=${encodeURIComponent('OIDC认证失败')}`, origin)
+        new URL(`/login?error=${encodeURIComponent('OIDC认证失败')}`, origin),
       );
     }
 
     // 验证必需参数
     if (!code || !state) {
       return NextResponse.redirect(
-        new URL('/login?error=' + encodeURIComponent('缺少必需参数'), origin)
+        new URL('/login?error=' + encodeURIComponent('缺少必需参数'), origin),
       );
     }
 
@@ -92,7 +80,7 @@ export async function GET(request: NextRequest) {
     const storedStateData = request.cookies.get('oidc_state')?.value;
     if (!storedStateData) {
       return NextResponse.redirect(
-        new URL('/login?error=' + encodeURIComponent('状态验证失败'), origin)
+        new URL('/login?error=' + encodeURIComponent('状态验证失败'), origin),
       );
     }
 
@@ -111,7 +99,7 @@ export async function GET(request: NextRequest) {
 
     if (storedState !== state) {
       return NextResponse.redirect(
-        new URL('/login?error=' + encodeURIComponent('状态验证失败'), origin)
+        new URL('/login?error=' + encodeURIComponent('状态验证失败'), origin),
       );
     }
 
@@ -123,9 +111,9 @@ export async function GET(request: NextRequest) {
     if (config.OIDCProviders && config.OIDCProviders.length > 0) {
       // 查找指定的 Provider
       if (providerId === 'default') {
-        oidcConfig = config.OIDCProviders.find(p => p.enabled);
+        oidcConfig = config.OIDCProviders.find((p) => p.enabled);
       } else {
-        oidcConfig = config.OIDCProviders.find(p => p.id === providerId);
+        oidcConfig = config.OIDCProviders.find((p) => p.id === providerId);
       }
     } else if (config.OIDCAuthConfig) {
       // 向后兼容：使用旧的单 Provider 配置
@@ -133,9 +121,15 @@ export async function GET(request: NextRequest) {
     }
 
     // 检查OIDC配置
-    if (!oidcConfig || !oidcConfig.tokenEndpoint || !oidcConfig.userInfoEndpoint || !oidcConfig.clientId || !oidcConfig.clientSecret) {
+    if (
+      !oidcConfig ||
+      !oidcConfig.tokenEndpoint ||
+      !oidcConfig.userInfoEndpoint ||
+      !oidcConfig.clientId ||
+      !oidcConfig.clientSecret
+    ) {
       return NextResponse.redirect(
-        new URL('/login?error=' + encodeURIComponent('OIDC配置不完整'), origin)
+        new URL('/login?error=' + encodeURIComponent('OIDC配置不完整'), origin),
       );
     }
 
@@ -173,7 +167,10 @@ export async function GET(request: NextRequest) {
       tokenHeaders['Accept'] = 'application/json';
     }
 
-    console.log('[OIDC Callback] Fetching token from:', oidcConfig.tokenEndpoint);
+    console.log(
+      '[OIDC Callback] Fetching token from:',
+      oidcConfig.tokenEndpoint,
+    );
     const tokenResponse = await fetch(oidcConfig.tokenEndpoint, {
       method: 'POST',
       headers: tokenHeaders,
@@ -185,7 +182,7 @@ export async function GET(request: NextRequest) {
       const errorText = await tokenResponse.text();
       console.error('获取token失败:', errorText);
       return NextResponse.redirect(
-        new URL('/login?error=' + encodeURIComponent('获取token失败'), origin)
+        new URL('/login?error=' + encodeURIComponent('获取token失败'), origin),
       );
     }
 
@@ -195,9 +192,15 @@ export async function GET(request: NextRequest) {
     const openid = tokenData.openid; // 微信返回的 openid
 
     // Facebook、微信和 GitHub 不一定返回 id_token（非标准OIDC）
-    if (!accessToken || (!idToken && providerId !== 'facebook' && providerId !== 'wechat' && providerId !== 'github')) {
+    if (
+      !accessToken ||
+      (!idToken &&
+        providerId !== 'facebook' &&
+        providerId !== 'wechat' &&
+        providerId !== 'github')
+    ) {
       return NextResponse.redirect(
-        new URL('/login?error=' + encodeURIComponent('token无效'), origin)
+        new URL('/login?error=' + encodeURIComponent('token无效'), origin),
       );
     }
 
@@ -215,25 +218,33 @@ export async function GET(request: NextRequest) {
           throw new Error('Invalid id_token format');
         }
         // Base64 解码 payload
-        const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString());
+        const payload = JSON.parse(
+          Buffer.from(tokenParts[1], 'base64').toString(),
+        );
         userInfo = payload;
       } catch (error) {
         console.error('解析 Apple id_token 失败:', error);
         return NextResponse.redirect(
-          new URL('/login?error=' + encodeURIComponent('Apple 用户信息解析失败'), origin)
+          new URL(
+            '/login?error=' + encodeURIComponent('Apple 用户信息解析失败'),
+            origin,
+          ),
         );
       }
     } else {
       // 其他 provider 需要调用 userinfo endpoint
       let userInfoUrl = oidcConfig.userInfoEndpoint;
       const userInfoHeaders: Record<string, string> = {
-        'Authorization': `Bearer ${accessToken}`,
+        Authorization: `Bearer ${accessToken}`,
       };
 
       if (providerId === 'facebook') {
         // Facebook Graph API 需要指定 fields
         const url = new URL(userInfoUrl);
-        url.searchParams.set('fields', 'id,name,email,picture.width(640).height(640)');
+        url.searchParams.set(
+          'fields',
+          'id,name,email,picture.width(640).height(640)',
+        );
         userInfoUrl = url.toString();
       } else if (providerId === 'wechat') {
         // 微信需要 access_token 和 openid 参数
@@ -254,30 +265,47 @@ export async function GET(request: NextRequest) {
       if (!userInfoResponse.ok) {
         console.error('获取用户信息失败:', await userInfoResponse.text());
         return NextResponse.redirect(
-          new URL('/login?error=' + encodeURIComponent('获取用户信息失败'), origin)
+          new URL(
+            '/login?error=' + encodeURIComponent('获取用户信息失败'),
+            origin,
+          ),
         );
       }
 
       userInfo = await userInfoResponse.json();
-      console.log('[OIDC Callback] User info received:', { providerId, hasEmail: !!userInfo.email, hasName: !!userInfo.name, hasSub: !!userInfo.sub, hasId: !!userInfo.id });
+      console.log('[OIDC Callback] User info received:', {
+        providerId,
+        hasEmail: !!userInfo.email,
+        hasName: !!userInfo.name,
+        hasSub: !!userInfo.sub,
+        hasId: !!userInfo.id,
+      });
 
       // GitHub 的 email 可能为 null（如果用户未公开），需要从 /user/emails 获取
       if (providerId === 'github' && !userInfo.email) {
         try {
-          const emailResponse = await fetch('https://api.github.com/user/emails', {
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Accept': 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
+          const emailResponse = await fetch(
+            'https://api.github.com/user/emails',
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+              },
             },
-          });
+          );
           if (emailResponse.ok) {
             const emails = await emailResponse.json();
             // 使用 primary email 或第一个 verified email
-            const primaryEmail = emails.find((e: any) => e.primary && e.verified);
+            const primaryEmail = emails.find(
+              (e: any) => e.primary && e.verified,
+            );
             const verifiedEmail = emails.find((e: any) => e.verified);
-            userInfo.email = primaryEmail?.email || verifiedEmail?.email || null;
-            console.log('[OIDC Callback] GitHub email fetched:', { hasEmail: !!userInfo.email });
+            userInfo.email =
+              primaryEmail?.email || verifiedEmail?.email || null;
+            console.log('[OIDC Callback] GitHub email fetched:', {
+              hasEmail: !!userInfo.email,
+            });
           }
         } catch (error) {
           console.error('获取 GitHub email 失败:', error);
@@ -294,7 +322,7 @@ export async function GET(request: NextRequest) {
     if (!oidcSub) {
       console.error('用户信息缺少唯一标识符:', userInfo);
       return NextResponse.redirect(
-        new URL('/login?error=' + encodeURIComponent('用户信息无效'), origin)
+        new URL('/login?error=' + encodeURIComponent('用户信息无效'), origin),
       );
     }
 
@@ -311,20 +339,22 @@ export async function GET(request: NextRequest) {
         // 检查用户是否被封禁
         if (userInfoV2.banned) {
           return NextResponse.redirect(
-            new URL('/login?error=' + encodeURIComponent('用户被封禁'), origin)
+            new URL('/login?error=' + encodeURIComponent('用户被封禁'), origin),
           );
         }
       }
     } else {
       // 回退到配置中查找
-      const existingUser = config.UserConfig.Users.find((u: any) => u.oidcSub === oidcSub);
+      const existingUser = config.UserConfig.Users.find(
+        (u: any) => u.oidcSub === oidcSub,
+      );
       if (existingUser) {
         username = existingUser.username;
         userRole = existingUser.role || 'user';
         // 检查用户是否被封禁
         if (existingUser.banned) {
           return NextResponse.redirect(
-            new URL('/login?error=' + encodeURIComponent('用户被封禁'), origin)
+            new URL('/login?error=' + encodeURIComponent('用户被封禁'), origin),
           );
         }
       }
@@ -342,7 +372,7 @@ export async function GET(request: NextRequest) {
         expires,
         sameSite: 'lax',
         httpOnly: false,
-        secure: false,
+        secure: new URL(request.url).protocol === 'https:',
       });
 
       // 清除state cookie
@@ -354,17 +384,21 @@ export async function GET(request: NextRequest) {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Cookie': `user_auth=${cookieValue}`
+          Cookie: `user_auth=${cookieValue}`,
         },
-        body: JSON.stringify({ loginTime })
-      }).catch(err => {
+        body: JSON.stringify({ loginTime }),
+      }).catch((err) => {
         console.error('OIDC登录记录登入时间失败:', err);
       });
 
       // 异步记录登录日志
       const xff = request.headers.get('x-forwarded-for');
       const realIp = request.headers.get('x-real-ip');
-      const clientIp = xff ? xff.split(',')[0].trim() : (realIp ? realIp.trim() : 'unknown');
+      const clientIp = xff
+        ? xff.split(',')[0].trim()
+        : realIp
+          ? realIp.trim()
+          : 'unknown';
       const oidcLoginLog = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         username,
@@ -374,7 +408,7 @@ export async function GET(request: NextRequest) {
         userAgent: request.headers.get('user-agent') || '',
         loginMethod: `oidc-${providerId}`,
       };
-      db.addLoginLog(oidcLoginLog).catch(err => {
+      db.addLoginLog(oidcLoginLog).catch((err) => {
         console.error('OIDC登录记录日志失败:', err);
       });
 
@@ -384,7 +418,10 @@ export async function GET(request: NextRequest) {
     // 用户不存在,检查是否允许注册
     if (!oidcConfig.enableRegistration) {
       return NextResponse.redirect(
-        new URL('/login?error=' + encodeURIComponent('该OIDC账号未注册'), origin)
+        new URL(
+          '/login?error=' + encodeURIComponent('该OIDC账号未注册'),
+          origin,
+        ),
       );
     }
 
@@ -398,7 +435,12 @@ export async function GET(request: NextRequest) {
       providerId: providerId, // 存储 provider ID 用于注册时验证
       timestamp: Date.now(),
     };
-    console.log('[OIDC Callback] Creating oidc_session:', { sub: oidcSession.sub, hasEmail: !!oidcSession.email, hasName: !!oidcSession.name, providerId });
+    console.log('[OIDC Callback] Creating oidc_session:', {
+      sub: oidcSession.sub,
+      hasEmail: !!oidcSession.email,
+      hasName: !!oidcSession.name,
+      providerId,
+    });
 
     const response = NextResponse.redirect(new URL('/oidc-register', origin));
     response.cookies.set('oidc_session', JSON.stringify(oidcSession), {
@@ -415,7 +457,10 @@ export async function GET(request: NextRequest) {
     return response;
   } catch (error) {
     console.error('OIDC回调处理失败:', error);
-    console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+    console.error(
+      'Error stack:',
+      error instanceof Error ? error.stack : 'No stack trace',
+    );
 
     let origin: string;
     if (process.env.SITE_BASE) {
@@ -430,12 +475,13 @@ export async function GET(request: NextRequest) {
     }
 
     // 在开发环境显示详细错误信息
-    const errorMessage = process.env.NODE_ENV === 'development' && error instanceof Error
-      ? `服务器错误: ${error.message}`
-      : '服务器错误';
+    const errorMessage =
+      process.env.NODE_ENV === 'development' && error instanceof Error
+        ? `服务器错误: ${error.message}`
+        : '服务器错误';
 
     return NextResponse.redirect(
-      new URL('/login?error=' + encodeURIComponent(errorMessage), origin)
+      new URL('/login?error=' + encodeURIComponent(errorMessage), origin),
     );
   }
 }
@@ -452,7 +498,16 @@ export async function POST(request: NextRequest) {
     const error = formData.get('error') as string | null;
     const userJson = formData.get('user') as string | null; // Apple may send user data
 
-    console.log('[OIDC Callback POST] Form params - code:', !!code, 'state:', !!state, 'error:', error, 'user:', !!userJson);
+    console.log(
+      '[OIDC Callback POST] Form params - code:',
+      !!code,
+      'state:',
+      !!state,
+      'error:',
+      error,
+      'user:',
+      !!userJson,
+    );
 
     // Reconstruct URL with query params to reuse GET handler logic
     const url = new URL(request.url);
@@ -469,7 +524,10 @@ export async function POST(request: NextRequest) {
     return await GET(newRequest);
   } catch (error) {
     console.error('OIDC POST回调处理失败:', error);
-    console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+    console.error(
+      'Error stack:',
+      error instanceof Error ? error.stack : 'No stack trace',
+    );
 
     let origin: string;
     if (process.env.SITE_BASE) {
@@ -483,12 +541,13 @@ export async function POST(request: NextRequest) {
       origin = origin.replace('://0.0.0.0:', '://localhost:');
     }
 
-    const errorMessage = process.env.NODE_ENV === 'development' && error instanceof Error
-      ? `服务器错误: ${error.message}`
-      : '服务器错误';
+    const errorMessage =
+      process.env.NODE_ENV === 'development' && error instanceof Error
+        ? `服务器错误: ${error.message}`
+        : '服务器错误';
 
     return NextResponse.redirect(
-      new URL('/login?error=' + encodeURIComponent(errorMessage), origin)
+      new URL('/login?error=' + encodeURIComponent(errorMessage), origin),
     );
   }
 }
