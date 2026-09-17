@@ -6,8 +6,9 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 
 WORKDIR /app
 
-# 仅复制依赖清单，提高构建缓存利用率
-COPY package.json pnpm-lock.yaml ./
+# 仅复制依赖清单（含 pnpm-workspace.yaml + patches，patchedDependencies 必需）
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 
 # 清理任何潜在的缓存并安装所有依赖（包括可选的原生模块）
 RUN pnpm store prune && pnpm install --frozen-lockfile
@@ -19,8 +20,9 @@ RUN apk add --no-cache python3 make g++
 RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
 
-# 复制package files先，确保依赖版本一致
-COPY package.json pnpm-lock.yaml ./
+# 复制package files先，确保依赖版本一致（含 pnpm-workspace.yaml + patches）
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 # 复制依赖
 COPY --from=deps /app/node_modules ./node_modules
 # 验证依赖完整性，如果不匹配则重新安装
