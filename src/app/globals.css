@@ -354,7 +354,9 @@ div[data-media-provider] video {
     opacity: 0;
     pointer-events: none;
     visibility: hidden;
-    transition: opacity 0.15s ease 0.3s, visibility 0s ease 0.45s; /* 0.3s隐藏延迟 */
+    transition:
+      opacity 0.15s ease 0.3s,
+      visibility 0s ease 0.45s; /* 0.3s隐藏延迟 */
   }
 
   /* 面板内部元素在显示时可交互 */
@@ -363,7 +365,7 @@ div[data-media-provider] video {
   }
 
   /* 防止进度条拖拽时弹窗干扰 */
-  .artplayer[data-dragging="true"] .artplayer-plugin-danmuku .apd-config-panel {
+  .artplayer[data-dragging='true'] .artplayer-plugin-danmuku .apd-config-panel {
     opacity: 0 !important;
     pointer-events: none !important;
     visibility: hidden !important;
@@ -479,15 +481,15 @@ html:not(.dark) .hover\:bg-slate-50:hover {
 
   /* 处理带有透明度的背景色 + backdrop-blur组合 */
   /* 例如: bg-white/80 backdrop-blur */
-  [class*="bg-white/"] {
+  [class*='bg-white/'] {
     background-color: rgba(255, 255, 255, 0.95) !important;
   }
 
-  [class*="bg-zinc-"][class*="/"] {
+  [class*='bg-zinc-'][class*='/'] {
     background-color: rgba(24, 24, 27, 0.95) !important;
   }
 
-  [class*="bg-gray-"][class*="/"] {
+  [class*='bg-gray-'][class*='/'] {
     background-color: rgba(31, 41, 55, 0.95) !important;
   }
 
@@ -547,4 +549,46 @@ html:not(.dark) .hover\:bg-slate-50:hover {
 
 .animate-shake-in {
   animation: shake-in 0.35s ease-out forwards;
+}
+
+/* ============================================
+   旧版 Safari/iOS 渐变兼容层（Safari < 16.2）
+   Tailwind v4 渐变默认使用 `in oklab` 插值，旧 WebKit 解析失败导致
+   渐变整体失效（登录按钮/标题/logo 变成白底白字不可见）。
+   此处在不支持 oklab 渐变的浏览器中，将插值空间降级为标准 sRGB，
+   仅覆盖 --tw-gradient-position 变量，现代浏览器不受影响。
+   ============================================ */
+@supports not (background: linear-gradient(to right in oklab, red, blue)) {
+  .bg-gradient-to-t,
+  .bg-linear-to-t {
+    --tw-gradient-position: to top;
+  }
+  .bg-gradient-to-tr,
+  .bg-linear-to-tr {
+    --tw-gradient-position: to top right;
+  }
+  .bg-gradient-to-r,
+  .bg-linear-to-r {
+    --tw-gradient-position: to right;
+  }
+  .bg-gradient-to-br,
+  .bg-linear-to-br {
+    --tw-gradient-position: to bottom right;
+  }
+  .bg-gradient-to-b,
+  .bg-linear-to-b {
+    --tw-gradient-position: to bottom;
+  }
+  .bg-gradient-to-bl,
+  .bg-linear-to-bl {
+    --tw-gradient-position: to bottom left;
+  }
+  .bg-gradient-to-l,
+  .bg-linear-to-l {
+    --tw-gradient-position: to left;
+  }
+  .bg-gradient-to-tl,
+  .bg-linear-to-tl {
+    --tw-gradient-position: to top left;
+  }
 }

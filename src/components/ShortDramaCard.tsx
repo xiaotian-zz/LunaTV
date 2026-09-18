@@ -297,7 +297,9 @@ function ShortDramaCard({
 
   const formatUpdateTime = (updateTime: string) => {
     try {
-      const date = new Date(updateTime);
+      // 兼容 Safari：空格分隔的日期串 iOS 15 会解析为 Invalid Date
+      const date = new Date(updateTime.replace(' ', 'T'));
+      if (isNaN(date.getTime())) return updateTime;
       return date.toLocaleDateString('zh-CN');
     } catch {
       return updateTime;

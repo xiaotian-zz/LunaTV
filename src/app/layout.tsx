@@ -1,8 +1,6 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 import type { Metadata, Viewport } from 'next';
-import { Inter } from 'next/font/google';
 import nextDynamic from 'next/dynamic';
+import { Inter } from 'next/font/google';
 import { cookies } from 'next/headers';
 import { Suspense } from 'react';
 import { Toaster } from 'sonner';
@@ -10,19 +8,21 @@ import { Toaster } from 'sonner';
 import './globals.css';
 
 import { getConfig } from '@/lib/config';
+import { POLYFILL_SCRIPT } from '@/lib/polyfillScript';
 
-import { GlobalErrorIndicator } from '../components/GlobalErrorIndicator';
-import { GlobalDOMErrorHandler } from '../components/GlobalDOMErrorHandler';
-import { DOMErrorBoundary } from '../components/DOMErrorBoundary';
+import { DownloadProvider } from '@/contexts/DownloadContext';
+import { GlobalCacheProvider } from '@/contexts/GlobalCacheContext';
+
 import { ChunkErrorGuard } from '../components/ChunkErrorGuard';
+import { CinematicLoadingFallback } from '../components/CinematicLoadingFallback';
+import { DOMErrorBoundary } from '../components/DOMErrorBoundary';
+import { GlobalDOMErrorHandler } from '../components/GlobalDOMErrorHandler';
+import { GlobalErrorIndicator } from '../components/GlobalErrorIndicator';
 import NavigationShell from '../components/NavigationShell';
+import QueryProvider from '../components/QueryProvider';
 import { SiteProvider } from '../components/SiteProvider';
 import { ThemeProvider } from '../components/ThemeProvider';
 import { WatchRoomProvider } from '../components/WatchRoomProvider';
-import { DownloadProvider } from '@/contexts/DownloadContext';
-import { GlobalCacheProvider } from '@/contexts/GlobalCacheContext';
-import QueryProvider from '../components/QueryProvider';
-import { CinematicLoadingFallback } from '../components/CinematicLoadingFallback';
 
 // 懒加载非关键 UI 组件，减少首屏 JS 体积（代码分割）
 const TranslationWarningToast = nextDynamic(() =>
@@ -160,6 +160,8 @@ export default async function RootLayout({
   return (
     <html lang='zh-CN' translate='no' suppressHydrationWarning>
       <head>
+        {/* 旧版 Safari 兼容垫片 + 全局错误上报 + 登录水合失败兜底：内联脚本随 HTML 解析同步执行，先于所有 _next chunk */}
+        <script dangerouslySetInnerHTML={{ __html: POLYFILL_SCRIPT }} />
         <meta
           name='viewport'
           content='width=device-width, initial-scale=1.0, viewport-fit=cover'
@@ -174,7 +176,7 @@ export default async function RootLayout({
         />
         <link rel='apple-touch-icon' href='/icons/icon-192x192.png' />
         {/* 将配置序列化后直接写入脚本，浏览器端可通过 window.RUNTIME_CONFIG 获取 */}
-        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
+        {}
         <script
           dangerouslySetInnerHTML={{
             __html: `window.RUNTIME_CONFIG = ${JSON.stringify(runtimeConfig)};`,

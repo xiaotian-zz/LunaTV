@@ -5,12 +5,20 @@ import { DEFAULT_USER_AGENT } from './user-agent';
 import { ShortDramaItem } from './types';
 
 // 短剧相关分类关键词（父分类 + 子分类标签）
-const SHORT_DRAMA_KEYWORDS = ['短剧', '女频恋爱', '反转爽剧', '古装仙侠', '年代穿越', '脑洞悬疑', '现代都市'];
+const SHORT_DRAMA_KEYWORDS = [
+  '短剧',
+  '女频恋爱',
+  '反转爽剧',
+  '古装仙侠',
+  '年代穿越',
+  '脑洞悬疑',
+  '现代都市',
+];
 
 // 从单个短剧源获取数据（通过分类名称查找）
 async function fetchFromShortDramaSource(
   api: string,
-  size: number
+  size: number,
 ): Promise<ShortDramaItem[]> {
   // Step 1: 获取分类列表，找到短剧相关分类的ID
   const listUrl = `${api}?ac=list`;
@@ -18,7 +26,7 @@ async function fetchFromShortDramaSource(
   const listResponse = await fetch(listUrl, {
     headers: {
       'User-Agent': DEFAULT_USER_AGENT,
-      'Accept': 'application/json',
+      Accept: 'application/json',
     },
     signal: AbortSignal.timeout(10000),
   });
@@ -31,8 +39,10 @@ async function fetchFromShortDramaSource(
   const categories = listData.class || [];
 
   // 查找短剧相关分类（父分类"短剧"或子分类标签）
-  const shortDramaCategories = categories.filter((cat: any) =>
-    cat.type_name && SHORT_DRAMA_KEYWORDS.some((kw: string) => cat.type_name.includes(kw))
+  const shortDramaCategories = categories.filter(
+    (cat: any) =>
+      cat.type_name &&
+      SHORT_DRAMA_KEYWORDS.some((kw: string) => cat.type_name.includes(kw)),
   );
 
   if (shortDramaCategories.length === 0) {
@@ -41,8 +51,9 @@ async function fetchFromShortDramaSource(
   }
 
   // 优先用父分类"短剧"，没有则用第一个匹配的子分类
-  const primaryCategory = shortDramaCategories.find((cat: any) => cat.type_name === '短剧')
-    || shortDramaCategories[0];
+  const primaryCategory =
+    shortDramaCategories.find((cat: any) => cat.type_name === '短剧') ||
+    shortDramaCategories[0];
   const categoryId = primaryCategory.type_id;
   console.log(`找到短剧分类ID: ${categoryId} (${primaryCategory.type_name})`);
 
@@ -52,7 +63,7 @@ async function fetchFromShortDramaSource(
   const response = await fetch(apiUrl, {
     headers: {
       'User-Agent': DEFAULT_USER_AGENT,
-      'Accept': 'application/json',
+      Accept: 'application/json',
     },
     signal: AbortSignal.timeout(10000),
   });
@@ -68,7 +79,9 @@ async function fetchFromShortDramaSource(
     id: item.vod_id,
     name: item.vod_name,
     cover: item.vod_pic || '',
-    update_time: item.vod_time || new Date().toISOString(),
+    update_time: item.vod_time
+      ? item.vod_time.replace(' ', 'T') // 兼容 Safari：空格分隔的日期串 iOS 15 无法解析
+      : new Date().toISOString(),
     score: parseFloat(item.vod_score) || 0,
     episode_count: parseInt(item.vod_remarks?.replace(/[^\d]/g, '') || '1'),
     description: item.vod_content || item.vod_blurb || '',
@@ -81,7 +94,7 @@ async function fetchFromShortDramaSource(
 // 服务端专用函数，从所有短剧源聚合数据
 export async function getRecommendedShortDramas(
   category?: number,
-  size = 10
+  size = 10,
 ): Promise<ShortDramaItem[]> {
   try {
     // 获取配置
@@ -89,7 +102,7 @@ export async function getRecommendedShortDramas(
 
     // 筛选出所有启用的短剧源
     const shortDramaSources = config.SourceConfig.filter(
-      source => source.type === 'shortdrama' && !source.disabled
+      (source) => source.type === 'shortdrama' && !source.disabled,
     );
 
     console.log(`📺 找到 ${shortDramaSources.length} 个配置的短剧源`);
@@ -99,38 +112,44 @@ export async function getRecommendedShortDramas(
       console.log('📺 使用默认短剧源');
       return await fetchFromShortDramaSource(
         'https://tyyszyapi.com/api.php/provide/vod',
-        size
+        size,
       );
     }
 
     // 有配置短剧源，聚合所有源的数据
     console.log('📺 聚合多个短剧源的数据');
     const results = await Promise.allSettled(
-      shortDramaSources.map(source => {
+      shortDramaSources.map((source) => {
         console.log(`🔄 请求短剧源: ${source.name}`);
         return fetchFromShortDramaSource(source.api, size);
-      })
+      }),
     );
 
     // 合并所有成功的结果
     const allItems: ShortDramaItem[] = [];
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') {
-        console.log(`✅ ${shortDramaSources[index].name}: 获取到 ${result.value.length} 条数据`);
+        console.log(
+          `✅ ${shortDramaSources[index].name}: 获取到 ${result.value.length} 条数据`,
+        );
         allItems.push(...result.value);
       } else {
-        console.error(`❌ ${shortDramaSources[index].name}: 请求失败`, result.reason);
+        console.error(
+          `❌ ${shortDramaSources[index].name}: 请求失败`,
+          result.reason,
+        );
       }
     });
 
     // 去重（根据名称）
     const uniqueItems = Array.from(
-      new Map(allItems.map(item => [item.name, item])).values()
+      new Map(allItems.map((item) => [item.name, item])).values(),
     );
 
     // 按更新时间排序
-    uniqueItems.sort((a, b) =>
-      new Date(b.update_time).getTime() - new Date(a.update_time).getTime()
+    uniqueItems.sort(
+      (a, b) =>
+        new Date(b.update_time).getTime() - new Date(a.update_time).getTime(),
     );
 
     // 返回指定数量
@@ -145,7 +164,7 @@ export async function getRecommendedShortDramas(
       console.log('⚠️ 出错，fallback到默认源');
       return await fetchFromShortDramaSource(
         'https://tyyszyapi.com/api.php/provide/vod',
-        size
+        size,
       );
     } catch (fallbackError) {
       console.error('默认源也失败:', fallbackError);

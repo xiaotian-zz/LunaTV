@@ -99,6 +99,7 @@
     "eslint-plugin-unused-imports": "^4.4.1",
     "husky": "^9.1.7",
     "jest": "^30.5.1",
+    "jest-environment-jsdom": "^30.5.2",
     "lint-staged": "^17.5.1",
     "next-router-mock": "^1.0.5",
     "postcss": "^8.5.28",
@@ -117,5 +118,12 @@
       "prettier -w"
     ]
   },
+  "browserslist": [
+    "chrome >= 80",
+    "edge >= 88",
+    "firefox >= 80",
+    "safari >= 13",
+    "ios_saf >= 13"
+  ],
   "packageManager": "pnpm@10.14.0"
 }

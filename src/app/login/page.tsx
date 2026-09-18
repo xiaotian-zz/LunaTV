@@ -108,6 +108,14 @@ function LoginPageClient() {
 
   const { siteName } = useSite();
 
+  // 标记 React 水合完成——body 内联兜底脚本（polyfillScript）据此决定
+  // 是否接管登录表单提交：水合失败时由原生 JS 兜底完成登录
+  useEffect(() => {
+    (
+      window as unknown as { __LUNA_REACT_HYDRATED?: boolean }
+    ).__LUNA_REACT_HYDRATED = true;
+  }, []);
+
   // 获取 Bing 每日壁纸（通过代理 API）
   useEffect(() => {
     const fetchBingWallpaper = async () => {
@@ -320,7 +328,12 @@ function LoginPageClient() {
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className='space-y-4 sm:space-y-6'>
+        {/* data-luna-login-form：内联兜底脚本据此在捕获阶段拦截提交（水合失败时用原生 JS 完成登录） */}
+        <form
+          data-luna-login-form='1'
+          onSubmit={handleSubmit}
+          className='space-y-4 sm:space-y-6'
+        >
           {shouldAskUsername && (
             <div className='group'>
               <label

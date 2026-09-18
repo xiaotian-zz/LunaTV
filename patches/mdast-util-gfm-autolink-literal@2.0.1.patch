@@ -1,0 +1,20 @@
+diff --git a/lib/index.js b/lib/index.js
+index c5ca771c24dd914e342f791716a822431ee32b3a..ccebac97e2376dd29044469d37dc589f30981046 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -132,7 +132,14 @@ function transformGfmAutolinkLiterals(tree) {
+     tree,
+     [
+       [/(https?:\/\/|www(?=\.))([-.\w]+)([^ \t\r\n]*)/gi, findUrl],
+-      [/(?<=^|\s|\p{P}|\p{S})([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
++      // PATCH (LunaTV, Safari < 16.4 compat): removed lookbehind assertion.
++      // JavaScriptCore on Safari < 16.4 (e.g. iOS 15.4) throws
++      // "SyntaxError: Invalid regular expression: invalid group specifier name"
++      // for `(?<=...)`, killing the whole chunk and breaking React hydration.
++      // The handler's previous(match, true) check enforces the identical rule
++      // (index === 0 || \s || \p{P}|\p{S}) via charCode, so the lookbehind is
++      // redundant — see findUrl which has no lookbehind and relies on it too.
++      [/(?:)([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
+     ],
+     {ignore: ['link', 'linkReference']}
+   )
