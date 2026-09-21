@@ -31,6 +31,8 @@ import {
   applyVideoPlayProxy,
   getVideoResolutionFromM3u8,
   isFirstPartyM3u8Proxy,
+  markVideoPlayProxyUnavailable,
+  probeVideoPlayProxy,
   stripVideoPlayProxy,
   VideoSourceTestResult,
 } from '@/lib/utils';
@@ -496,29 +498,29 @@ function PlayPageClient() {
 
     switch (mode) {
       case 'enhanced':
-        // 增强模式：1.5 倍缓冲 + 并发预取 2 个分片
+        // 增强模式：90s 缓冲 + 并发预取 3 个分片
         return {
-          maxBufferLength: 45, // 45s（默认30s × 1.5）
+          maxBufferLength: 90, // 90s
           backBufferLength: 45,
-          maxBufferSize: 90 * 1000 * 1000, // 90MB
-          prefetchConcurrency: 2,
-        };
-      case 'max':
-        // 强力模式：3 倍缓冲 + 并发预取 3 个分片
-        return {
-          maxBufferLength: 90, // 90s（默认30s × 3）
-          backBufferLength: 60,
           maxBufferSize: 180 * 1000 * 1000, // 180MB
           prefetchConcurrency: 3,
         };
+      case 'max':
+        // 强力模式：135s 缓冲 + 并发预取 4 个分片
+        return {
+          maxBufferLength: 135, // 135s
+          backBufferLength: 60,
+          maxBufferSize: 270 * 1000 * 1000, // 270MB
+          prefetchConcurrency: 4,
+        };
       case 'standard':
       default:
-        // 默认模式
+        // 默认模式：45s 缓冲 + 并发预取 2 个分片
         return {
-          maxBufferLength: 30,
+          maxBufferLength: 45,
           backBufferLength: 30,
-          maxBufferSize: 60 * 1000 * 1000, // 60MB
-          prefetchConcurrency: 1, // 1 = 不并发预取
+          maxBufferSize: 90 * 1000 * 1000, // 90MB
+          prefetchConcurrency: 2,
         };
     }
   };
@@ -2462,6 +2464,12 @@ function PlayPageClient() {
     }
 
     const episodeData = detailData.episodes[episodeIndex];
+
+    // 📶 播放前探测 Cloudflare Worker 代理可达性：被运营商阻断或连接过慢时
+    // 直接标记不可用（applyVideoPlayProxy 将跳过代理走直连），避免黑屏等超时
+    if (episodeData && !episodeData.startsWith('shortdrama:')) {
+      await probeVideoPlayProxy();
+    }
 
     // 检查是否为短剧格式
     if (episodeData && episodeData.startsWith('shortdrama:')) {
@@ -5262,6 +5270,7 @@ function PlayPageClient() {
                   : null;
                 if (rawUrl) {
                   console.warn('Worker 代理错误，降级为直连:', rawUrl);
+                  markVideoPlayProxyUnavailable();
                   (video as any)._proxyFallbackDone = true;
                   (video as any)._currentHlsUrl = rawUrl;
                   (video as any)._consecutiveNetworkErrorCount = 0;
@@ -6924,6 +6933,7 @@ function PlayPageClient() {
           // URL，降级为直连后再次 error 会得到 null，天然防止无限循环。
           const rawUrl = stripVideoPlayProxy(artPlayerRef.current?.url || '');
           if (rawUrl) {
+            markVideoPlayProxyUnavailable();
             console.warn(
               '播放器错误：Worker 代理分片失败，降级为直连:',
               rawUrl,

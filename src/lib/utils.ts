@@ -1,4 +1,4 @@
-import { clsx, type ClassValue } from 'clsx';
+import { type ClassValue, clsx } from 'clsx';
 import he from 'he';
 import Hls from 'hls.js';
 import { twMerge } from 'tailwind-merge';
@@ -95,21 +95,12 @@ export {
 
 function getBangumiImageProxyConfig(): {
   proxyType:
-    | 'server'
-    | 'cmliussss'
-    | 'corsapi'
-    | 'sakura'
-    | 'custom'
-    | 'direct';
+    'server' | 'cmliussss' | 'corsapi' | 'sakura' | 'custom' | 'direct';
   proxyUrl: string;
 } {
   let bangumiImageProxyType:
-    | 'server'
-    | 'cmliussss'
-    | 'corsapi'
-    | 'sakura'
-    | 'custom'
-    | 'direct' = 'server';
+    'server' | 'cmliussss' | 'corsapi' | 'sakura' | 'custom' | 'direct' =
+    'server';
   let bangumiImageProxyUrl = '';
 
   if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
@@ -117,12 +108,7 @@ function getBangumiImageProxyConfig(): {
     const runtimeType = (window as any).RUNTIME_CONFIG
       ?.BANGUMI_IMAGE_PROXY_TYPE;
     bangumiImageProxyType = (storedType || runtimeType || 'server') as
-      | 'server'
-      | 'cmliussss'
-      | 'corsapi'
-      | 'sakura'
-      | 'custom'
-      | 'direct';
+      'server' | 'cmliussss' | 'corsapi' | 'sakura' | 'custom' | 'direct';
     bangumiImageProxyUrl =
       localStorage.getItem('bangumiImageProxyUrl') ||
       (window as any).RUNTIME_CONFIG?.BANGUMI_IMAGE_PROXY ||
@@ -302,9 +288,87 @@ export function applyVideoPlayProxy(url: string): string {
   // 已经代理过，避免套娃
   if (url.startsWith(proxyUrl)) return url;
 
+  // 📶 已知不可达/过慢（部分运营商阻断 workers.dev 等）：跳过代理直接直连
+  if (isVideoPlayProxyKnownUnavailable()) return url;
+
   const isM3u8 = /\.m3u8(\?|#|$)/i.test(url);
   const endpoint = isM3u8 ? '/m3u8' : '/';
   return `${proxyUrl}${endpoint}?url=${encodeURIComponent(url)}`;
+}
+
+// ============ Worker 代理可用性探测（运营商阻断 workers.dev / 连接过慢时自动降级直连） ============
+// 某些运营商无法访问 Cloudflare Worker（SNI 阻断/DNS 污染），表现为请求根本发不出去，
+// 只能等播放器超时才降级。这里在播放前主动探测：不可达或连接耗时过长都判为不可用，
+// 后续播放直接走直连，避免黑屏等待。
+const PROXY_PROBE_TIMEOUT_MS = 5000; // 探测请求超时
+const PROXY_PROBE_RTT_LIMIT_MS = 3000; // 连接耗时超过该值视为过慢，降级直连
+const PROXY_PROBE_TTL_MS = 10 * 60 * 1000; // 探测结果缓存 10 分钟，过期后允许重新探测
+
+type VideoProxyAvailability = 'unknown' | 'ok' | 'unavailable';
+let videoProxyAvailability: VideoProxyAvailability = 'unknown';
+let videoProxyProbedAt = 0;
+let videoProxyProbePromise: Promise<VideoProxyAvailability> | null = null;
+
+// 是否已知 Worker 代理不可用（不可达或连接过慢）且结果仍在有效期内
+export function isVideoPlayProxyKnownUnavailable(): boolean {
+  return (
+    videoProxyAvailability === 'unavailable' &&
+    Date.now() - videoProxyProbedAt < PROXY_PROBE_TTL_MS
+  );
+}
+
+// 标记 Worker 代理不可用（播放失败降级直连时调用，让后续播放/换源不再走 Worker）
+export function markVideoPlayProxyUnavailable(): void {
+  videoProxyAvailability = 'unavailable';
+  videoProxyProbedAt = Date.now();
+}
+
+// 探测 Worker 代理可达性与连接耗时；结果缓存在页面会话内
+export async function probeVideoPlayProxy(): Promise<VideoProxyAvailability> {
+  const { enabled, proxyUrl } = getVideoPlayProxyConfig();
+  if (!enabled || !proxyUrl) return 'unavailable';
+  if (
+    videoProxyAvailability !== 'unknown' &&
+    Date.now() - videoProxyProbedAt < PROXY_PROBE_TTL_MS
+  ) {
+    return videoProxyAvailability;
+  }
+
+  const run = async (): Promise<VideoProxyAvailability> => {
+    const start =
+      typeof performance !== 'undefined' ? performance.now() : Date.now();
+    try {
+      // no-cors：只测网络连通性与耗时，不关心响应内容（/health 是 CORSAPI 健康端点）
+      await fetch(`${proxyUrl}/health`, {
+        method: 'GET',
+        mode: 'no-cors',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(PROXY_PROBE_TIMEOUT_MS),
+      });
+      const rtt =
+        (typeof performance !== 'undefined' ? performance.now() : Date.now()) -
+        start;
+      videoProxyAvailability =
+        rtt <= PROXY_PROBE_RTT_LIMIT_MS ? 'ok' : 'unavailable';
+      if (videoProxyAvailability === 'unavailable') {
+        console.warn(
+          `[VideoProxy] Worker 代理连接过慢（${Math.round(rtt)}ms > ${PROXY_PROBE_RTT_LIMIT_MS}ms），本次会话改用直连`,
+        );
+      }
+    } catch {
+      videoProxyAvailability = 'unavailable';
+      console.warn(
+        '[VideoProxy] Worker 代理不可达（可能被运营商阻断），本次会话改用直连',
+      );
+    }
+    videoProxyProbedAt = Date.now();
+    return videoProxyAvailability;
+  };
+
+  videoProxyProbePromise = run().finally(() => {
+    videoProxyProbePromise = null;
+  });
+  return videoProxyProbePromise;
 }
 
 // Worker 代理请求失败（超时/502等）时，从代理地址还原出真实地址，用于自动降级直连
