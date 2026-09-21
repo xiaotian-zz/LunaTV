@@ -20,12 +20,8 @@ import { incrementDbQuery } from './performance-monitor';
 // storage type 常量: 'localstorage' | 'redis' | 'upstash'，默认 'localstorage'
 const STORAGE_TYPE =
   (process.env.NEXT_PUBLIC_STORAGE_TYPE as
-    | 'localstorage'
-    | 'redis'
-    | 'upstash'
-    | 'kvrocks'
-    | 'sqlite'
-    | undefined) || 'localstorage';
+    'localstorage' | 'redis' | 'upstash' | 'kvrocks' | 'sqlite' | undefined) ||
+  'localstorage';
 
 // 创建存储实例
 function createStorage(): IStorage {
@@ -40,7 +36,7 @@ function createStorage(): IStorage {
       if (process.env.EDGEONE_PAGES === '1') {
         throw new Error(
           '[LunaTV] SQLite storage is not supported on EdgeOne Pages: the platform has no persistent filesystem. ' +
-          'Please set NEXT_PUBLIC_STORAGE_TYPE to "upstash", "redis", or "kvrocks".'
+            'Please set NEXT_PUBLIC_STORAGE_TYPE to "upstash", "redis", or "kvrocks".',
         );
       }
       return new SqliteStorage();
@@ -320,6 +316,21 @@ export class DbManager {
       return (this.storage as any).verifyUserV2(userName, password);
     }
     return false;
+  }
+
+  async importUser(
+    userName: string,
+    storedPassword: string,
+    info?: {
+      role?: 'owner' | 'admin' | 'user';
+      tags?: string[];
+      oidcSub?: string;
+      enabledApis?: string[];
+      createdAt?: number;
+    },
+  ): Promise<void> {
+    incrementDbQuery();
+    await this.storage.importUser(userName, storedPassword, info);
   }
 
   async checkUserExistV2(userName: string): Promise<boolean> {

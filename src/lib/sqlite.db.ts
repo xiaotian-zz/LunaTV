@@ -477,6 +477,49 @@ export class SqliteStorage implements IStorage {
       );
   }
 
+  // 导入备份用户：按原值恢复 V1 凭据，并登记 V2 用户列表（避免 getAllUsers 遗漏）
+  async importUser(
+    userName: string,
+    storedPassword: string,
+    info?: {
+      role?: 'owner' | 'admin' | 'user';
+      tags?: string[];
+      oidcSub?: string;
+      enabledApis?: string[];
+      createdAt?: number;
+    },
+  ): Promise<void> {
+    // V1 凭据：备份值已是加盐哈希则直写，明文（如站长 env 密码）则哈希一次
+    const finalPwd = storedPassword
+      ? isHashed(storedPassword)
+        ? storedPassword
+        : hashPwd(storedPassword)
+      : '';
+    const createdAt = info?.createdAt || Date.now();
+    if (finalPwd) {
+      this.db
+        .prepare(
+          'INSERT OR REPLACE INTO users (username, password_hash, created_at) VALUES (?, ?, ?)',
+        )
+        .run(userName, finalPwd, createdAt);
+    }
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO users_v2
+         (username, password, role, banned, tags, enabled_apis, oidc_sub, created_at)
+         VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
+      )
+      .run(
+        userName,
+        finalPwd,
+        info?.role || 'user',
+        info?.tags ? JSON.stringify(info.tags) : null,
+        info?.enabledApis ? JSON.stringify(info.enabledApis) : null,
+        info?.oidcSub || null,
+        createdAt,
+      );
+  }
+
   async verifyUserV2(userName: string, password: string): Promise<boolean> {
     const row = this.db
       .prepare('SELECT password FROM users_v2 WHERE username = ?')

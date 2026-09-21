@@ -175,6 +175,18 @@ export interface IStorage {
   changePassword(userName: string, newPassword: string): Promise<void>;
   // 删除用户（包括密码、搜索历史、播放记录、收藏夹）
   deleteUser(userName: string): Promise<void>;
+  // 导入备份用户：按原值恢复 V1 凭据，并登记 V2 用户列表（避免 getAllUsers 遗漏）
+  importUser(
+    userName: string,
+    storedPassword: string,
+    info?: {
+      role?: 'owner' | 'admin' | 'user';
+      tags?: string[];
+      oidcSub?: string;
+      enabledApis?: string[];
+      createdAt?: number;
+    },
+  ): Promise<void>;
 
   // 搜索历史相关
   getSearchHistory(userName: string): Promise<string[]>;

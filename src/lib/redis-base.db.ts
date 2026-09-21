@@ -519,6 +519,63 @@ export abstract class BaseRedisStorage implements IStorage {
     );
   }
 
+  // 导入备份用户：按原值恢复 V1 凭据，并登记 V2 用户列表（避免 getAllUsers 遗漏）
+  async importUser(
+    userName: string,
+    storedPassword: string,
+    info?: {
+      role?: 'owner' | 'admin' | 'user';
+      tags?: string[];
+      oidcSub?: string;
+      enabledApis?: string[];
+      createdAt?: number;
+    },
+  ): Promise<void> {
+    // V1 凭据：备份值已是加盐哈希则直写，明文（如站长 env 密码）则哈希一次
+    const finalPwd = storedPassword
+      ? isHashed(storedPassword)
+        ? storedPassword
+        : hashPwd(storedPassword)
+      : '';
+    if (finalPwd) {
+      await this.withRetry(() =>
+        this.client.set(this.userPwdKey(userName), finalPwd),
+      );
+    }
+
+    // V2 登记：写入用户信息 + 用户列表，保证 getAllUsers 始终可见
+    const createdAt = info?.createdAt || Date.now();
+    const userInfo: Record<string, string> = {
+      role: info?.role || 'user',
+      banned: 'false',
+      created_at: createdAt.toString(),
+    };
+    if (finalPwd) {
+      userInfo.password = finalPwd;
+    }
+    if (info?.tags && info.tags.length > 0) {
+      userInfo.tags = JSON.stringify(info.tags);
+    }
+    if (info?.enabledApis && info.enabledApis.length > 0) {
+      userInfo.enabledApis = JSON.stringify(info.enabledApis);
+    }
+    if (info?.oidcSub) {
+      userInfo.oidcSub = info.oidcSub;
+      await this.withRetry(() =>
+        this.client.set(this.oidcSubKey(info.oidcSub!), userName),
+      );
+    }
+    await this.withRetry(() =>
+      this.client.hSet(this.userInfoKey(userName), userInfo),
+    );
+    await this.withRetry(() =>
+      this.client.zAdd(this.userListKey(), {
+        score: createdAt,
+        value: userName,
+      }),
+    );
+  }
+
   // 验证用户密码（新版本）
   async verifyUserV2(userName: string, password: string): Promise<boolean> {
     const userInfo = await this.withRetry(() =>
