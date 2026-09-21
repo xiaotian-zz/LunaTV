@@ -24,6 +24,7 @@ import {
   subscribeToDataUpdates,
 } from '@/lib/db.client';
 import { normalizeDownloadSource } from '@/lib/download';
+import { createPrefetchLoaders } from '@/lib/hls-prefetch-loader';
 import { SearchResult } from '@/lib/types';
 import {
   applyFirstPartyM3u8Proxy,
@@ -495,18 +496,20 @@ function PlayPageClient() {
 
     switch (mode) {
       case 'enhanced':
-        // 增强模式：1.5 倍缓冲
+        // 增强模式：1.5 倍缓冲 + 并发预取 2 个分片
         return {
           maxBufferLength: 45, // 45s（默认30s × 1.5）
           backBufferLength: 45,
           maxBufferSize: 90 * 1000 * 1000, // 90MB
+          prefetchConcurrency: 2,
         };
       case 'max':
-        // 强力模式：3 倍缓冲
+        // 强力模式：3 倍缓冲 + 并发预取 3 个分片
         return {
           maxBufferLength: 90, // 90s（默认30s × 3）
           backBufferLength: 60,
           maxBufferSize: 180 * 1000 * 1000, // 180MB
+          prefetchConcurrency: 3,
         };
       case 'standard':
       default:
@@ -515,6 +518,7 @@ function PlayPageClient() {
           maxBufferLength: 30,
           backBufferLength: 30,
           maxBufferSize: 60 * 1000 * 1000, // 60MB
+          prefetchConcurrency: 1, // 1 = 不并发预取
         };
     }
   };
@@ -5079,30 +5083,31 @@ function PlayPageClient() {
                 lowLatencyMode: false,
 
                 // 🎯 官方推荐的缓冲策略 - iOS13+ 特别优化
-                /* 缓冲长度配置 - 参考 hlsDefaultConfig - 桌面设备应用用户配置 */
+                /* 缓冲长度配置 - 移动端应用用户配置但设安全上限（MSE 内存约束） */
                 maxBufferLength: isMobile
-                  ? localIsIOS13
-                    ? 8
-                    : isIOS
-                      ? 10
-                      : 15 // iOS13+: 8s, iOS: 10s, Android: 15s
-                  : bufferConfig.maxBufferLength, // 桌面使用用户配置
+                  ? Math.min(
+                      bufferConfig.maxBufferLength,
+                      localIsIOS13 ? 15 : isIOS ? 20 : 25, // iOS13+: 15s, iOS: 20s, Android: 25s
+                    )
+                  : bufferConfig.maxBufferLength, // 桌面直接使用用户配置
                 backBufferLength: isMobile
-                  ? localIsIOS13
-                    ? 5
-                    : isIOS
-                      ? 8
-                      : 10 // iOS13+更保守
-                  : bufferConfig.backBufferLength, // 桌面使用用户配置
+                  ? Math.min(
+                      bufferConfig.backBufferLength,
+                      localIsIOS13 ? 10 : isIOS ? 15 : 20,
+                    )
+                  : bufferConfig.backBufferLength, // 桌面直接使用用户配置
 
-                /* 缓冲大小配置 - 基于官方 maxBufferSize - 桌面设备应用用户配置 */
+                /* 缓冲大小配置 - 移动端同样应用用户配置（带上限） */
                 maxBufferSize: isMobile
-                  ? localIsIOS13
-                    ? 20 * 1000 * 1000
-                    : isIOS
-                      ? 30 * 1000 * 1000
-                      : 40 * 1000 * 1000 // iOS13+: 20MB, iOS: 30MB, Android: 40MB
-                  : bufferConfig.maxBufferSize, // 桌面使用用户配置
+                  ? Math.min(
+                      bufferConfig.maxBufferSize,
+                      localIsIOS13
+                        ? 30 * 1000 * 1000
+                        : isIOS
+                          ? 50 * 1000 * 1000
+                          : 60 * 1000 * 1000, // iOS13+: 30MB, iOS: 50MB, Android: 60MB
+                    )
+                  : bufferConfig.maxBufferSize, // 桌面直接使用用户配置
 
                 /* 网络加载优化 - 参考 defaultLoadPolicy */
                 maxLoadingDelay: isMobile ? (localIsIOS13 ? 2 : 3) : 4, // iOS13+设备更快超时
@@ -5123,9 +5128,10 @@ function PlayPageClient() {
                 abrEwmaFastLive: isMobile ? 2 : 3, // 移动端更快的码率切换
                 abrEwmaSlowLive: isMobile ? 6 : 9,
                 abrBandWidthFactor: isMobile ? 0.8 : 0.95, // 移动端更保守的带宽估计
+                abrEwmaDefaultEstimate: 2500000, // 初始带宽估计 2.5Mbps（采集源码率普遍 2000k），避免起播选低码率档
 
                 /* 启动优化 */
-                startFragPrefetch: !isMobile, // 移动端关闭预取以节省资源
+                startFragPrefetch: true, // 全平台开启起播预取（点击播放即预取首分片）
                 testBandwidth: !localIsIOS13, // iOS13+关闭带宽测试以快速启动
 
                 /* Loader配置 - 参考官方 fragLoadPolicy */
@@ -5150,6 +5156,15 @@ function PlayPageClient() {
                 loader: blockAdEnabledRef.current
                   ? CustomHlsJsLoader
                   : Hls.DefaultConfig.loader,
+
+                /* ☁️ 并发分片预取（C 优化）：增强/强力模式启用，广告过滤模式不兼容故跳过 */
+                ...(bufferConfig.prefetchConcurrency > 1 &&
+                !blockAdEnabledRef.current
+                  ? createPrefetchLoaders(
+                      bufferConfig.prefetchConcurrency,
+                      Hls.DefaultConfig.loader,
+                    )
+                  : {}),
               });
 
               hls.loadSource(url);
