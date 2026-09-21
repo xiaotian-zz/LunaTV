@@ -3017,7 +3017,7 @@ function PlayPageClient() {
           );
 
         // 创建并执行自定义函数
-         
+
         const customFunction = new Function(
           'type',
           'm3u8Content',
@@ -3610,9 +3610,9 @@ function PlayPageClient() {
             const allSources = [...sourcesInfo];
             sources.forEach((source) => {
               // 避免重复添加当前源
-              if (
-                !(source.source === currentSource && source.id === currentId)
-              ) {
+              if (!(
+                source.source === currentSource && source.id === currentId
+              )) {
                 allSources.push(source);
               }
             });
@@ -5314,10 +5314,18 @@ function PlayPageClient() {
                     data.details === Hls.ErrorDetails.LEVEL_LOAD_ERROR ||
                     data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT)
                 ) {
+                  // Worker 代理场景下源站常对 CF 出口 IP 做风控式拦截
+                  // （能起播但分片间歇 403，表现为播放 1 秒后反复重连），
+                  // 等满 8 次只会白白重连——降为 2 次立即回退直连；
+                  // 直连场景保持 8 次，避免误伤偶发网络抖动。
+                  const isWorkerProxied = !!stripVideoPlayProxy(
+                    (video as any)._currentHlsUrl || url,
+                  );
+                  const threshold = isWorkerProxied ? 2 : 8;
                   const count =
                     ((video as any)._consecutiveNetworkErrorCount || 0) + 1;
                   (video as any)._consecutiveNetworkErrorCount = count;
-                  if (count >= 8) {
+                  if (count >= threshold) {
                     console.warn(
                       `连续 ${count} 次非致命网络错误，主动降级:`,
                       data.details,
@@ -5846,9 +5854,7 @@ function PlayPageClient() {
             artplayerPluginSeekButtons({
               seekTime: parseInt(localStorage.getItem('seek_time') || '10', 10),
               mobileLayout: (localStorage.getItem('seek_layout') || 'both') as
-                | 'both'
-                | 'left'
-                | 'right',
+                'both' | 'left' | 'right',
             }),
           ],
         });
@@ -6896,6 +6902,20 @@ function PlayPageClient() {
         // 监听播放器错误
         artPlayerRef.current.on('error', (err: any) => {
           console.error('播放器错误:', err);
+          // ☁️ 原生播放路径的 Worker 代理降级兜底：源站对 CF 出口 IP 拦截分片
+          // （m3u8 清单能过、.ts 分片 403）时 video 元素抛原生 error 并反复重载
+          // （表现为"播 1 秒后归零重连"），hls.js 的 ERROR 回调可能不触发。
+          // 这里把代理地址还原为直连地址重载；stripVideoPlayProxy 只还原代理
+          // URL，降级为直连后再次 error 会得到 null，天然防止无限循环。
+          const rawUrl = stripVideoPlayProxy(artPlayerRef.current?.url || '');
+          if (rawUrl) {
+            console.warn(
+              '播放器错误：Worker 代理分片失败，降级为直连:',
+              rawUrl,
+            );
+            setVideoUrl(rawUrl);
+            return;
+          }
           if (artPlayerRef.current.currentTime > 0) {
             return;
           }
