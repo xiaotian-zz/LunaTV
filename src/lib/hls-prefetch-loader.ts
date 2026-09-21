@@ -41,6 +41,8 @@ export function createPrefetchLoaders(
       status: 'pending' | 'ready';
       promise?: Promise<ArrayBuffer>;
       data?: ArrayBuffer;
+      controller?: AbortController;
+      aborted?: boolean;
     }
   >();
   const cacheLimit = concurrency + 2;
@@ -84,8 +86,17 @@ export function createPrefetchLoaders(
       status: 'pending' | 'ready';
       promise?: Promise<ArrayBuffer>;
       data?: ArrayBuffer;
+      controller?: AbortController;
+      aborted?: boolean;
     } = { status: 'pending' };
-    entry.promise = fetch(url, { method: 'GET', credentials: 'omit' })
+    // 🔧 fetch 可取消：seek/abort 时释放连接，避免 stale 预取占满
+    // 浏览器同域连接池导致新位置加载排队转圈（HTTP/1.1 源站仅 6 条连接）
+    entry.controller = new AbortController();
+    entry.promise = fetch(url, {
+      method: 'GET',
+      credentials: 'omit',
+      signal: entry.controller.signal,
+    })
       .then((res) => {
         if (!res.ok) throw new Error(`prefetch HTTP ${res.status}`);
         return res.arrayBuffer();
@@ -96,24 +107,57 @@ export function createPrefetchLoaders(
         okCount += 1;
         return data;
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         cache.delete(url);
+        // 主动取消（seek/abort/destroy）不计入失败统计，不触发熔断
+        if (entry.aborted) {
+          throw new Error('prefetch aborted');
+        }
         failCount += 1;
         if (shouldDisable()) disabled = true;
-        throw new Error('prefetch failed');
+        throw err instanceof Error ? err : new Error('prefetch failed');
       });
     cache.set(url, entry);
     evictOldest();
   };
 
+  // 取消指定分片的 pending 预取（释放连接），ready 缓存保留（可复用）
+  const cancelPrefetch = (url: string) => {
+    const entry = cache.get(url);
+    if (entry && entry.status === 'pending' && !entry.aborted) {
+      entry.aborted = true;
+      try {
+        entry.controller?.abort();
+      } catch {
+        /* 已 abort 或不可取消 */
+      }
+      cache.delete(url);
+    }
+  };
+
+  let lastPrefetchBatch: string[] = []; // 最近一批预取的分片 URL（abort 时批量取消）
+
   const prefetchAfter = (url: string) => {
     if (disabled || concurrency <= 0) return;
     const idx = indexByUrl.get(url);
     if (idx === undefined) return;
+    const batch: string[] = [];
     for (let i = 1; i <= concurrency; i += 1) {
       const next = fragUrls[idx + i];
-      if (next) prefetch(next);
+      if (next) {
+        prefetch(next);
+        batch.push(next);
+      }
     }
+    lastPrefetchBatch = batch;
+  };
+
+  // 取消当前分片之后的一整批预取（seek/abort 时释放连接）
+  const cancelPrefetchBatch = () => {
+    for (const u of lastPrefetchBatch) {
+      cancelPrefetch(u);
+    }
+    lastPrefetchBatch = [];
   };
 
   // ---------- m3u8 分片 URL 解析 ----------
@@ -200,8 +244,10 @@ export function createPrefetchLoaders(
             prefetchAfter(url);
           })
           .catch(() => {
-            // 预取失败：回退原生加载（仅当未被 abort/destroy）
-            if (this.callbacks === callbacks) {
+            // 预取失败：回退原生加载。
+            // 但主动取消（seek/abort，entry.aborted=true）时 hls.js 已放弃该分片，
+            // 不回退加载，避免浪费连接或状态错乱
+            if (!entry.aborted && this.callbacks === callbacks) {
               this.inner.load(savedContext, config, callbacks);
             }
           });
@@ -220,10 +266,29 @@ export function createPrefetchLoaders(
     }
 
     abort() {
+      // 🔧 真正的取消语义：hls.js seek/重新调度时会调用 abort，
+      // 此时取消 pending 主加载的预取 Promise 关联与后续预取批次，
+      // 释放浏览器连接给新位置的分片，避免快速拖动进度条后转圈不加载
+      const url: string = this.context?.url;
+      if (url) {
+        const entry = cache.get(url);
+        if (entry && entry.status === 'pending') {
+          cancelPrefetch(url);
+        }
+      }
+      cancelPrefetchBatch();
       this.inner.abort();
     }
 
     destroy() {
+      const url: string = this.context?.url;
+      if (url) {
+        const entry = cache.get(url);
+        if (entry && entry.status === 'pending') {
+          cancelPrefetch(url);
+        }
+      }
+      cancelPrefetchBatch();
       this.inner.destroy();
     }
   }
