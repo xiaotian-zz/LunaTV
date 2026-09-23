@@ -5280,9 +5280,43 @@ function PlayPageClient() {
                       bufferConfig.prefetchConcurrency,
                       Hls.DefaultConfig.loader,
                       {
-                        transformPlaylist: blockAdEnabledRef.current
-                          ? filterAdsFromM3U8
-                          : undefined,
+                        transformPlaylist: (body: string, baseUrl: string) => {
+                          let out = body;
+                          // 1) 去广告过滤（开关开启时）
+                          if (blockAdEnabledRef.current) {
+                            try {
+                              out = filterAdsFromM3U8(out);
+                            } catch {
+                              /* 过滤失败保留原始内容 */
+                            }
+                          }
+                          // 2) 分片 URL 统一改写为本站 segment 代理。
+                          //    m3u8 经 Worker 代理转发时只回传原始内容，
+                          //    分片仍是源站 URL，直连会被封源站的墙全部
+                          //    超时（10s+ 零字节）。统一走本站 /api/proxy/
+                          //    segment 由服务端转发，无论 m3u8 从哪层加载
+                          //    （直连/Worker/第一方代理）都稳定。
+                          try {
+                            const origin = window.location.origin;
+                            out = out
+                              .split('\n')
+                              .map((line: string) => {
+                                const t = line.trim();
+                                if (!t || t.startsWith('#')) return line;
+                                try {
+                                  const abs = new URL(t, baseUrl).toString();
+                                  if (abs.startsWith(origin)) return line;
+                                  return `${origin}/api/proxy/segment?url=${encodeURIComponent(abs)}`;
+                                } catch {
+                                  return line;
+                                }
+                              })
+                              .join('\n');
+                          } catch {
+                            /* 改写失败保留原始内容 */
+                          }
+                          return out;
+                        },
                       },
                     )
                   : {}),

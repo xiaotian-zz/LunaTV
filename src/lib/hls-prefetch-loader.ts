@@ -23,18 +23,26 @@ const PREFETCH_WINDOW_STATS = 20; // 熔断统计窗口
 const PREFETCH_FAIL_RATE_LIMIT = 0.5; // 失败率熔断阈值
 
 export interface PrefetchLoaderFactory {
-  fragLoader: any;
-  playlistLoader: any;
+  /**
+   * ⚠️ hls.js 1.7 的有效配置键：loader（主加载，含 fragment）、
+   * fLoader（gap 修复路径的分片加载）、pLoader（playlist）。
+   * playlistLoader/fragLoader 不是有效键名会被静默忽略（预取静默失效）。
+   * 返回结构直接使用 hls.js 键名，调用方直接 spread 进 config。
+   */
+  loader: any;
+  fLoader: any;
+  pLoader: any;
 }
 
 export interface PrefetchLoaderOptions {
   /**
-   * playlist（m3u8）响应转换器（如去广告过滤）。
-   * 在 parsePlaylist 抽取分片 URL 之前执行——预取定位的是过滤后
-   * 真实会播放的分片列表。与分片预取天然不冲突：过滤只作用于
-   * m3u8（playlistLoader），预取只作用于分片（fragLoader）。
+   * playlist（m3u8）响应转换器（如去广告过滤、分片 URL 代理化改写）。
+   * 在 parsePlaylist 抽取分片 URL 之前执行——预取定位的是转换后
+   * 真实会播放的分片列表。与分片预取天然不冲突：转换只作用于
+   * m3u8（pLoader），预取只作用于分片（loader）。
+   * 第二参数 baseUrl 为该 m3u8 的请求地址（相对路径解析基准）。
    */
-  transformPlaylist?: (body: string) => string;
+  transformPlaylist?: (body: string, baseUrl: string) => string;
 }
 
 export function createPrefetchLoaders(
@@ -168,10 +176,21 @@ export function createPrefetchLoaders(
 
   let lastPrefetchBatch: string[] = []; // 最近一批预取的分片 URL（abort 时批量取消）
 
+  // 调试统计：URL 匹配失败定位（indexByUrl 查不到的主加载 URL）
+  let loadCalls = 0;
+  let rangeCalls = 0;
+  let missCount = 0;
+  let lastLoadUrl = '';
+  let lastMissUrl = '';
+
   const prefetchAfter = (url: string) => {
     if (disabled || concurrency <= 0) return;
     const idx = indexByUrl.get(url);
-    if (idx === undefined) return;
+    if (idx === undefined) {
+      missCount += 1;
+      lastMissUrl = url;
+      return;
+    }
     const batch: string[] = [];
     for (let i = 1; i <= concurrency; i += 1) {
       const next = fragUrls[idx + i];
@@ -225,34 +244,58 @@ export function createPrefetchLoaders(
     return null;
   };
 
+  // 调试钩子：暴露内部状态（排查预取失效时在控制台调用 __prefetchDebug()）
+  if (typeof window !== 'undefined') {
+    (window as any).__prefetchDebug = () => ({
+      disabled,
+      cooldownMs,
+      okCount,
+      failCount,
+      fragUrlCount: fragUrls.length,
+      indexedCount: indexByUrl.size,
+      cacheSize: cache.size,
+      lastBatchSize: lastPrefetchBatch.length,
+      concurrency,
+      loadCalls,
+      rangeCalls,
+      missCount,
+      lastLoadUrl: lastLoadUrl.slice(-70),
+      lastMissUrl: lastMissUrl.slice(-70),
+    });
+  }
+
   // ---------- loaders ----------
-  class PrefetchFragLoader {
-    private inner: any;
-    private context: any;
-    private config: any;
-    private callbacks: any;
+  // ⚠️ 必须用继承（extends BaseLoader）而不是组合包装：hls.js 直接把
+  // config.loader 实例用于内部状态管理，组合类缺少基类完整协议会导致
+  // hls.js 初始化/重建异常。CustomHlsJsLoader 同样采用继承模式。
+  class PrefetchFragLoader extends BaseLoader {
     // 当前加载请求的状态：abort/新请求取代后，迟到的 promise 回调必须被丢弃，
     // 否则 hls.js 收到已废弃分片的 onSuccess 会导致内部状态错乱 → 停止调度缓冲
     private loadState: { cancelled: boolean } | null = null;
 
-    constructor(config: any) {
-      this.inner = new BaseLoader(config);
-    }
-
     load(context: any, config: any, callbacks: any) {
+      loadCalls += 1;
+      lastLoadUrl = String(context?.url || 'NO-URL').slice(-70);
       const url: string = context?.url;
-      const hasRange = context?.rangeStart !== undefined;
+      // ⚠️ hls.js 1.7 fragment context 默认 rangeStart:0、rangeEnd:0
+      // （非 BYTERANGE 流也是），只判断 rangeStart 会让所有分片被误判为
+      // Byte-Range 而跳过预取。真实 BYTERANGE 分片 rangeEnd > rangeStart。
+      const hasRange =
+        context?.rangeStart !== undefined &&
+        context?.rangeEnd !== undefined &&
+        context.rangeEnd > context.rangeStart;
 
       // Byte-Range 分片：不支持预取，直连
       if (!url || hasRange) {
-        this.inner.load(context, config, callbacks);
+        rangeCalls += 1;
+        super.load(context, config, callbacks);
         return;
       }
 
       // 防御：上一请求未被 abort 就发起新加载（异常时序），清理旧加载
       if (this.loadState && !this.loadState.cancelled) {
         this.loadState.cancelled = true;
-        this.inner.abort();
+        super.abort();
       }
       const state = { cancelled: false };
       this.loadState = state;
@@ -289,7 +332,7 @@ export function createPrefetchLoaders(
           }
           if (!state.cancelled && this.loadState === state) {
             try {
-              this.inner.load(savedContext, savedConfig, savedCallbacks);
+              super.load(savedContext, savedConfig, savedCallbacks);
             } catch {
               /* 忽略 */
             }
@@ -321,21 +364,17 @@ export function createPrefetchLoaders(
             // 主加载正在等待的批次成员）：只要当前 load 仍有效就必须
             // 回退原生加载。否则该分片永远无回调 → hls.js 停止调度
             // → 转圈卡死（连续拖动进度条时的挂死根因）
-            if (this.callbacks === callbacks) {
-              this.inner.load(savedContext, savedConfig, savedCallbacks);
+            if (this.loadState === state) {
+              super.load(savedContext, savedConfig, savedCallbacks);
             }
           });
-        this.context = context;
-        this.config = config;
-        this.callbacks = callbacks;
         return;
       }
 
       // 未命中：正常加载 + 触发预取
-      this.context = context;
-      this.config = config;
-      this.callbacks = callbacks;
-      this.inner.load(context, config, callbacks);
+      loadCalls += 1;
+      lastLoadUrl = url;
+      super.load(context, config, callbacks);
       prefetchAfter(url);
     }
 
@@ -354,7 +393,7 @@ export function createPrefetchLoaders(
         }
       }
       cancelPrefetchBatch();
-      this.inner.abort();
+      super.abort();
     }
 
     destroy() {
@@ -369,7 +408,7 @@ export function createPrefetchLoaders(
         }
       }
       cancelPrefetchBatch();
-      this.inner.destroy();
+      super.destroy();
     }
   }
 
@@ -389,15 +428,16 @@ export function createPrefetchLoaders(
           ctx: any,
           networkDetails: any,
         ) => {
-          // 先做 playlist 转换（去广告过滤），再在过滤结果上抽取分片 URL。
+          // 先做 playlist 转换（去广告过滤/URL 改写），再抽取分片 URL。
           // 仅 media playlist（含 EXTINF）需要转换，master playlist 原样保留
+          const baseUrl: string = response?.url || context?.url || '';
           if (
             transformPlaylist &&
             typeof response?.data === 'string' &&
             response.data.includes('#EXTINF')
           ) {
             try {
-              response.data = transformPlaylist(response.data);
+              response.data = transformPlaylist(response.data, baseUrl);
             } catch {
               /* 转换失败保留原始内容 */
             }
@@ -422,7 +462,11 @@ export function createPrefetchLoaders(
   }
 
   return {
-    fragLoader: PrefetchFragLoader as any,
-    playlistLoader: PrefetchPlaylistLoader as any,
+    // ⚠️ hls.js 1.7 主分片加载只用 config.loader（fLoader 仅 gap 修复路径），
+    // 所以 fragment 预取 loader 必须同时占据 loader 和 fLoader 两个键；
+    // playlist 由 pLoader 接管（含去广告过滤与分片列表记录）
+    loader: PrefetchFragLoader as any,
+    fLoader: PrefetchFragLoader as any,
+    pLoader: PrefetchPlaylistLoader as any,
   };
 }
