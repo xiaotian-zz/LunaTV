@@ -372,6 +372,9 @@ function PlayPageClient() {
   });
   const blockAdEnabledRef = useRef(blockAdEnabled);
 
+  // 去广告开关（管理页面配置，默认开启）
+  const adFilterEnabledRef = useRef(true);
+
   // 自定义去广告代码
   const [customAdFilterCode, setCustomAdFilterCode] = useState<string>('');
   const [customAdFilterVersion, setCustomAdFilterVersion] = useState<number>(1);
@@ -811,10 +814,18 @@ function PlayPageClient() {
     return () => clearInterval(interval);
   }, []);
 
-  // 获取自定义去广告代码
+  // 获取去广告配置（开关状态 + 自定义代码）
   useEffect(() => {
-    const fetchAdFilterCode = async () => {
+    const fetchAdFilterConfig = async () => {
       try {
+        // 获取去广告开关状态
+        const res = await fetch('/api/ad-filter');
+        if (res.ok) {
+          const { enabled } = await res.json();
+          adFilterEnabledRef.current = enabled !== false;
+          console.log('去广告开关状态:', adFilterEnabledRef.current);
+        }
+
         // 从缓存读取去广告代码和版本号
         const cachedCode = localStorage.getItem('customAdFilterCode');
         const cachedVersion = localStorage.getItem('customAdFilterVersion');
@@ -829,7 +840,7 @@ function PlayPageClient() {
         const version =
           (window as any).RUNTIME_CONFIG?.CUSTOM_AD_FILTER_VERSION || 0;
 
-        // 如果版本号为 0，说明去广告未设置，清空缓存并跳过
+        // 如果版本号为 0，说明去广告代码未设置，清空缓存并跳过
         if (version === 0) {
           localStorage.removeItem('customAdFilterCode');
           localStorage.removeItem('customAdFilterVersion');
@@ -865,11 +876,11 @@ function PlayPageClient() {
           console.log('去广告代码已更新到版本 ' + newVersion);
         }
       } catch (error) {
-        console.error('获取自定义去广告代码失败:', error);
+        console.error('获取去广告配置失败:', error);
       }
     };
 
-    fetchAdFilterCode();
+    fetchAdFilterConfig();
   }, []);
 
   // WebGPU支持检测
@@ -3009,6 +3020,9 @@ function PlayPageClient() {
   function filterAdsFromM3U8(m3u8Content: string): string {
     if (!m3u8Content) return '';
 
+    // 管理页面开关：关闭时不过滤，按源站原始内容播放
+    if (!adFilterEnabledRef.current) return m3u8Content;
+
     // 如果有自定义去广告代码，优先使用
     const customCode = customAdFilterCodeRef.current;
     if (customCode && customCode.trim()) {
@@ -3039,13 +3053,12 @@ function PlayPageClient() {
         console.log('✅ 使用自定义去广告代码');
         return result;
       } catch (err) {
-        console.error('执行自定义去广告代码失败,降级使用默认规则:', err);
-        // 继续使用默认规则
+        console.error('执行自定义去广告代码失败,降级使用内置规则:', err);
+        // 继续使用内置规则
       }
     }
 
-    // 默认去广告规则
-    if (!m3u8Content) return '';
+    // 内置去广告规则
 
     // 广告关键字列表
     const adKeywords = [
@@ -3057,44 +3070,135 @@ function PlayPageClient() {
       '/adjump',
       'redtraffic',
     ];
+    const isAdUrl = (url: string) => {
+      const lower = url.toLowerCase();
+      return adKeywords.some((keyword) => lower.includes(keyword));
+    };
 
-    // 按行分割M3U8内容
-    const lines = m3u8Content.split('\n');
-    const filteredLines = [];
+    // ---------- 结构化解析 ----------
+    // 1) 头部标签（EXTM3U 等）2) 分片（DISCONTINUITY/EXTINF/标签 + URL）3) 尾部（ENDLIST）
+    type Frag = { disc: boolean; dur: number; tagLines: string[]; url: string };
+    const headLines: string[] = [];
+    const tailLines: string[] = [];
+    const frags: Frag[] = [];
+    let phase: 'head' | 'body' | 'tail' = 'head';
+    let curDisc = false;
+    let curDur = 0;
+    let curTags: string[] = [];
 
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // 跳过 #EXT-X-DISCONTINUITY 标识
-      if (line.includes('#EXT-X-DISCONTINUITY')) {
-        i++;
+    for (const raw of m3u8Content.split('\n')) {
+      const line = raw.trimEnd();
+      const t = line.trim();
+      if (phase === 'head') {
+        if (!t) continue;
+        if (t.startsWith('#EXT-X-DISCONTINUITY')) {
+          curDisc = true;
+          continue;
+        }
+        if (t.startsWith('#EXTINF:')) {
+          curDur = parseFloat(t.slice(8)) || 0;
+          curTags = [line];
+          phase = 'body';
+          continue;
+        }
+        headLines.push(line);
         continue;
       }
-
-      // 如果是 EXTINF 行，检查下一行 URL 是否包含广告关键字
-      if (line.includes('#EXTINF:')) {
-        // 检查下一行 URL 是否包含广告关键字
-        if (i + 1 < lines.length) {
-          const nextLine = lines[i + 1];
-          const containsAdKeyword = adKeywords.some((keyword) =>
-            nextLine.toLowerCase().includes(keyword.toLowerCase()),
-          );
-
-          if (containsAdKeyword) {
-            // 跳过 EXTINF 行和 URL 行
-            i += 2;
-            continue;
-          }
-        }
+      if (phase === 'tail') {
+        tailLines.push(line);
+        continue;
       }
-
-      // 保留当前行
-      filteredLines.push(line);
-      i++;
+      // body
+      if (!t) continue;
+      if (t.startsWith('#EXT-X-ENDLIST')) {
+        tailLines.push(line);
+        phase = 'tail';
+        continue;
+      }
+      if (t.startsWith('#EXT-X-DISCONTINUITY')) {
+        curDisc = true;
+        continue;
+      }
+      if (t.startsWith('#EXTINF:')) {
+        curDur = parseFloat(t.slice(8)) || 0;
+        curTags = [line];
+        continue;
+      }
+      if (t.startsWith('#')) {
+        curTags.push(line);
+        continue;
+      }
+      // URL 行 → 一个分片完成
+      frags.push({ disc: curDisc, dur: curDur, tagLines: curTags, url: line });
+      curDisc = false;
+      curDur = 0;
+      curTags = [];
     }
 
-    return filteredLines.join('\n');
+    // 2) 标记待删除分片
+    const drop: boolean[] = new Array(frags.length).fill(false);
+
+    // 2a. URL 关键字广告
+    frags.forEach((f, i) => {
+      if (isAdUrl(f.url)) drop[i] = true;
+    });
+
+    // 2b. DISCONTINUITY 对包裹的广告段：
+    //     两个相邻近 DISCONTINUITY 之间的分片总时长很短（≤90s）且含 <1s 碎分片
+    //     —— 这类源广告 URL 无特征（hash 命名），靠此结构特征识别
+    for (let i = 0; i < frags.length; i += 1) {
+      if (!frags[i].disc) continue;
+      let total = 0;
+      let hasTiny = false;
+      let j = i;
+      while (j < frags.length) {
+        if (j > i && frags[j].disc) break; // 遇到下一个 DISCONTINUITY 分片
+        total += frags[j].dur;
+        if (frags[j].dur > 0 && frags[j].dur < 1) hasTiny = true;
+        j += 1;
+      }
+      if (
+        j < frags.length &&
+        frags[j].disc &&
+        total > 0 &&
+        total <= 90 &&
+        hasTiny
+      ) {
+        for (let k = i; k < j; k += 1) drop[k] = true;
+      }
+    }
+
+    // 3) 输出：DISCONTINUITY 全部保留（时间戳跳变必须让 hls.js 重新对齐，
+    //    否则缓冲空洞 → 提前 ended、音画不同步）；广告删除点自动补插
+    const out: string[] = [...headLines];
+    let needDisc = false;
+    let lastOutDisc = false;
+    for (let i = 0; i < frags.length; i += 1) {
+      const f = frags[i];
+      if (drop[i]) {
+        needDisc = true;
+        continue;
+      }
+      if (f.disc) {
+        if (!lastOutDisc) {
+          out.push('#EXT-X-DISCONTINUITY');
+          lastOutDisc = true;
+        }
+        needDisc = false;
+      } else if (needDisc) {
+        if (!lastOutDisc) {
+          out.push('#EXT-X-DISCONTINUITY');
+          lastOutDisc = true;
+        }
+        needDisc = false;
+      }
+      out.push(...f.tagLines);
+      out.push(f.url);
+      lastOutDisc = false;
+    }
+    out.push(...tailLines);
+
+    return out.join('\n');
   }
 
   const formatTime = (seconds: number): string => {

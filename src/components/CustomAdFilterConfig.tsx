@@ -1,8 +1,6 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 'use client';
 
-import { AlertCircle, CheckCircle, Code, Info } from 'lucide-react';
+import { AlertCircle, CheckCircle, Shield } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { AdminConfig } from '@/lib/admin.types';
@@ -12,19 +10,28 @@ interface CustomAdFilterConfigProps {
   refreshConfig: () => Promise<void>;
 }
 
-const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigProps) => {
+const CustomAdFilterConfig = ({
+  config,
+  refreshConfig,
+}: CustomAdFilterConfigProps) => {
   const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [message, setMessage] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
 
   const [filterSettings, setFilterSettings] = useState({
+    customAdFilterEnabled: true,
     customAdFilterCode: '',
     customAdFilterVersion: 1,
   });
 
-  // 从config加载设置
+  // 从config加载设置（开关未配置时默认开启）
   useEffect(() => {
     if (config?.SiteConfig) {
       setFilterSettings({
+        customAdFilterEnabled:
+          config.SiteConfig.CustomAdFilterEnabled !== false,
         customAdFilterCode: config.SiteConfig.CustomAdFilterCode || '',
         customAdFilterVersion: config.SiteConfig.CustomAdFilterVersion || 1,
       });
@@ -45,20 +52,21 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
         throw new Error('配置未加载');
       }
 
-      // 合并完整的 AdminConfig（参考 MoonTVPlus）
+      // 合并完整的 AdminConfig
       const updatedConfig = {
         ...config,
         SiteConfig: {
           ...config.SiteConfig,
+          CustomAdFilterEnabled: filterSettings.customAdFilterEnabled,
           CustomAdFilterCode: filterSettings.customAdFilterCode,
           CustomAdFilterVersion: filterSettings.customAdFilterVersion,
-        }
+        },
       };
 
       const response = await fetch('/api/admin/config', {
-        method: 'POST',  // 改为 POST
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedConfig)  // 发送完整配置
+        body: JSON.stringify(updatedConfig),
       });
 
       if (!response.ok) {
@@ -66,7 +74,7 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
         throw new Error(error.error || '保存失败');
       }
 
-      showMessage('success', '自定义去广告配置已保存');
+      showMessage('success', '去广告配置已保存');
       await refreshConfig();
     } catch (error: any) {
       showMessage('error', error.message || '保存失败');
@@ -78,6 +86,7 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
   // 重置输入框（不保存）
   const handleReset = () => {
     setFilterSettings({
+      customAdFilterEnabled: true,
       customAdFilterCode: '',
       customAdFilterVersion: 1,
     });
@@ -91,20 +100,21 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
         throw new Error('配置未加载');
       }
 
-      // 合并完整的 AdminConfig，重置自定义去广告配置
+      // 合并完整的 AdminConfig，重置去广告配置
       const updatedConfig = {
         ...config,
         SiteConfig: {
           ...config.SiteConfig,
+          CustomAdFilterEnabled: true,
           CustomAdFilterCode: '',
           CustomAdFilterVersion: 1,
-        }
+        },
       };
 
       const response = await fetch('/api/admin/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedConfig)
+        body: JSON.stringify(updatedConfig),
       });
 
       if (!response.ok) {
@@ -113,6 +123,7 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
       }
 
       setFilterSettings({
+        customAdFilterEnabled: true,
         customAdFilterCode: '',
         customAdFilterVersion: 1,
       });
@@ -126,7 +137,7 @@ const CustomAdFilterConfig = ({ config, refreshConfig }: CustomAdFilterConfigPro
     }
   };
 
-  // 默认示例代码
+  // 默认示例代码（与播放页内置规则一致）
   const defaultExample = `// 自定义去广告函数
 // 参数: type (播放源key), m3u8Content (m3u8文件内容)
 // 返回: 过滤后的m3u8内容
@@ -144,72 +155,205 @@ function filterAdsFromM3U8(type, m3u8Content) {
     '/adjump',
     'redtraffic'
   ];
+  const isAdUrl = (url) => {
+    const lower = url.toLowerCase();
+    return adKeywords.some((keyword) => lower.includes(keyword));
+  };
 
-  // 按行分割M3U8内容
-  const lines = m3u8Content.split('\\n');
-  const filteredLines = [];
+  // ---------- 结构化解析 ----------
+  // 1) 头部标签（EXTM3U 等）2) 分片（DISCONTINUITY/EXTINF/标签 + URL）3) 尾部（ENDLIST）
+  const headLines = [];
+  const tailLines = [];
+  const frags = [];
+  let phase = 'head';
+  let curDisc = false;
+  let curDur = 0;
+  let curTags = [];
 
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // 跳过 #EXT-X-DISCONTINUITY 标识
-    if (line.includes('#EXT-X-DISCONTINUITY')) {
-      i++;
+  for (const raw of m3u8Content.split('\\n')) {
+    const line = raw.trimEnd();
+    const t = line.trim();
+    if (phase === 'head') {
+      if (!t) continue;
+      if (t.startsWith('#EXT-X-DISCONTINUITY')) {
+        curDisc = true;
+        continue;
+      }
+      if (t.startsWith('#EXTINF:')) {
+        curDur = parseFloat(t.slice(8)) || 0;
+        curTags = [line];
+        phase = 'body';
+        continue;
+      }
+      headLines.push(line);
       continue;
     }
-
-    // 如果是 EXTINF 行，检查下一行 URL 是否包含广告关键字
-    if (line.includes('#EXTINF:')) {
-      // 检查下一行 URL 是否包含广告关键字
-      if (i + 1 < lines.length) {
-        const nextLine = lines[i + 1];
-        const containsAdKeyword = adKeywords.some(keyword =>
-          nextLine.toLowerCase().includes(keyword.toLowerCase())
-        );
-
-        if (containsAdKeyword) {
-          // 跳过 EXTINF 行和 URL 行
-          i += 2;
-          continue;
-        }
-      }
+    if (phase === 'tail') {
+      tailLines.push(line);
+      continue;
     }
-
-    // 保留当前行
-    filteredLines.push(line);
-    i++;
+    // body
+    if (!t) continue;
+    if (t.startsWith('#EXT-X-ENDLIST')) {
+      tailLines.push(line);
+      phase = 'tail';
+      continue;
+    }
+    if (t.startsWith('#EXT-X-DISCONTINUITY')) {
+      curDisc = true;
+      continue;
+    }
+    if (t.startsWith('#EXTINF:')) {
+      curDur = parseFloat(t.slice(8)) || 0;
+      curTags = [line];
+      continue;
+    }
+    if (t.startsWith('#')) {
+      curTags.push(line);
+      continue;
+    }
+    // URL 行 → 一个分片完成
+    frags.push({ disc: curDisc, dur: curDur, tagLines: curTags, url: line });
+    curDisc = false;
+    curDur = 0;
+    curTags = [];
   }
 
-  return filteredLines.join('\\n');
+  // 2) 标记待删除分片
+  const drop = new Array(frags.length).fill(false);
+
+  // 2a. URL 关键字广告
+  frags.forEach((f, i) => {
+    if (isAdUrl(f.url)) drop[i] = true;
+  });
+
+  // 2b. DISCONTINUITY 对包裹的广告段：
+  //     两个相邻近 DISCONTINUITY 之间的分片总时长很短（≤90s）且含 <1s 碎分片
+  //     —— 这类源广告 URL 无特征（hash 命名），靠此结构特征识别
+  for (let i = 0; i < frags.length; i += 1) {
+    if (!frags[i].disc) continue;
+    let total = 0;
+    let hasTiny = false;
+    let j = i;
+    while (j < frags.length) {
+      if (j > i && frags[j].disc) break; // 遇到下一个 DISCONTINUITY 分片
+      total += frags[j].dur;
+      if (frags[j].dur > 0 && frags[j].dur < 1) hasTiny = true;
+      j += 1;
+    }
+    if (
+      j < frags.length &&
+      frags[j].disc &&
+      total > 0 &&
+      total <= 90 &&
+      hasTiny
+    ) {
+      for (let k = i; k < j; k += 1) drop[k] = true;
+    }
+  }
+
+  // 3) 输出：DISCONTINUITY 全部保留（时间戳跳变必须让播放器重新对齐，
+  //    否则缓冲空洞 → 提前下一集、音画不同步）；广告删除点自动补插
+  const out = [...headLines];
+  let needDisc = false;
+  let lastOutDisc = false;
+  for (let i = 0; i < frags.length; i += 1) {
+    const f = frags[i];
+    if (drop[i]) {
+      needDisc = true;
+      continue;
+    }
+    if (f.disc) {
+      if (!lastOutDisc) {
+        out.push('#EXT-X-DISCONTINUITY');
+        lastOutDisc = true;
+      }
+      needDisc = false;
+    } else if (needDisc) {
+      if (!lastOutDisc) {
+        out.push('#EXT-X-DISCONTINUITY');
+        lastOutDisc = true;
+      }
+      needDisc = false;
+    }
+    out.push(...f.tagLines);
+    out.push(f.url);
+    lastOutDisc = false;
+  }
+  out.push(...tailLines);
+
+  return out.join('\\n');
 }`;
 
   return (
     <div className='space-y-6'>
       {/* 标题和说明 */}
       <div className='flex items-start gap-3'>
-        <Code className='w-6 h-6 text-purple-500 shrink-0 mt-1' />
+        <Shield className='w-6 h-6 text-purple-500 shrink-0 mt-1' />
         <div className='flex-1'>
           <h3 className='text-lg font-semibold text-gray-900 dark:text-gray-100'>
-            自定义去广告代码
+            去广告
           </h3>
           <p className='text-sm text-gray-600 dark:text-gray-400 mt-1'>
-            编写自定义 JavaScript 代码来实现更强力的去广告功能
+            播放时自动过滤 m3u8 中的广告片段，支持自定义过滤代码
           </p>
         </div>
+      </div>
+
+      {/* 启用开关 */}
+      <div className='flex items-center justify-between bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4'>
+        <div className='pr-4'>
+          <h4 className='text-sm font-medium text-gray-900 dark:text-gray-100'>
+            启用去广告
+          </h4>
+          <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+            总开关：开启后按自定义代码（若有）或内置规则过滤广告；关闭后按源站原始内容播放。
+          </p>
+        </div>
+        <label className='relative inline-flex items-center cursor-pointer shrink-0'>
+          <input
+            type='checkbox'
+            checked={filterSettings.customAdFilterEnabled}
+            onChange={(e) =>
+              setFilterSettings({
+                ...filterSettings,
+                customAdFilterEnabled: e.target.checked,
+              })
+            }
+            className='sr-only peer'
+          />
+          <div className="w-11 h-6 bg-gray-200 dark:bg-gray-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 dark:peer-focus:ring-purple-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-purple-600"></div>
+        </label>
       </div>
 
       {/* 信息提示 */}
       <div className='bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4'>
         <div className='flex items-start gap-3'>
-          <Info className='w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5' />
           <div className='text-sm text-blue-800 dark:text-blue-200'>
             <p className='font-medium mb-2'>使用说明：</p>
             <ul className='space-y-1 list-disc list-inside'>
-              <li>函数名必须为 <code className='px-1 py-0.5 bg-blue-100 dark:bg-blue-800 rounded'>filterAdsFromM3U8</code></li>
-              <li>接收两个参数：<code className='px-1 py-0.5 bg-blue-100 dark:bg-blue-800 rounded'>type</code>（播放源key）和 <code className='px-1 py-0.5 bg-blue-100 dark:bg-blue-800 rounded'>m3u8Content</code>（m3u8内容）</li>
+              <li>
+                不填自定义代码时，使用内置去广告规则（与上方示例代码逻辑一致）
+              </li>
+              <li>
+                函数名必须为{' '}
+                <code className='px-1 py-0.5 bg-blue-100 dark:bg-blue-800 rounded'>
+                  filterAdsFromM3U8
+                </code>
+              </li>
+              <li>
+                接收两个参数：
+                <code className='px-1 py-0.5 bg-blue-100 dark:bg-blue-800 rounded'>
+                  type
+                </code>
+                （播放源key）和{' '}
+                <code className='px-1 py-0.5 bg-blue-100 dark:bg-blue-800 rounded'>
+                  m3u8Content
+                </code>
+                （m3u8内容）
+              </li>
               <li>必须返回过滤后的 m3u8 内容字符串</li>
-              <li>如果代码执行失败，将自动降级使用默认去广告规则</li>
+              <li>如果代码执行失败，将自动降级使用内置去广告规则</li>
               <li>修改代码后记得更新版本号，让浏览器刷新缓存</li>
             </ul>
           </div>
@@ -225,10 +369,12 @@ function filterAdsFromM3U8(type, m3u8Content) {
           type='number'
           min='1'
           value={filterSettings.customAdFilterVersion}
-          onChange={(e) => setFilterSettings({
-            ...filterSettings,
-            customAdFilterVersion: parseInt(e.target.value) || 1
-          })}
+          onChange={(e) =>
+            setFilterSettings({
+              ...filterSettings,
+              customAdFilterVersion: parseInt(e.target.value) || 1,
+            })
+          }
           className='w-32 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-purple-500 focus:border-transparent'
           placeholder='1'
         />
@@ -244,7 +390,12 @@ function filterAdsFromM3U8(type, m3u8Content) {
             自定义代码
           </label>
           <button
-            onClick={() => setFilterSettings({ ...filterSettings, customAdFilterCode: defaultExample })}
+            onClick={() =>
+              setFilterSettings({
+                ...filterSettings,
+                customAdFilterCode: defaultExample,
+              })
+            }
             className='text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300'
           >
             载入示例代码
@@ -252,7 +403,12 @@ function filterAdsFromM3U8(type, m3u8Content) {
         </div>
         <textarea
           value={filterSettings.customAdFilterCode}
-          onChange={(e) => setFilterSettings({ ...filterSettings, customAdFilterCode: e.target.value })}
+          onChange={(e) =>
+            setFilterSettings({
+              ...filterSettings,
+              customAdFilterCode: e.target.value,
+            })
+          }
           className='w-full h-96 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 font-mono text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none'
           placeholder={defaultExample}
         />
@@ -263,11 +419,13 @@ function filterAdsFromM3U8(type, m3u8Content) {
 
       {/* 消息提示 */}
       {message && (
-        <div className={`flex items-center gap-2 p-4 rounded-lg ${
-          message.type === 'success'
-            ? 'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800'
-            : 'bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
-        }`}>
+        <div
+          className={`flex items-center gap-2 p-4 rounded-lg ${
+            message.type === 'success'
+              ? 'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800'
+              : 'bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
+          }`}
+        >
           {message.type === 'success' ? (
             <CheckCircle className='w-5 h-5 shrink-0' />
           ) : (

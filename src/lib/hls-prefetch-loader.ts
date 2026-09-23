@@ -200,6 +200,9 @@ export function createPrefetchLoaders(
     private context: any;
     private config: any;
     private callbacks: any;
+    // 当前加载请求的状态：abort/新请求取代后，迟到的 promise 回调必须被丢弃，
+    // 否则 hls.js 收到已废弃分片的 onSuccess 会导致内部状态错乱 → 停止调度缓冲
+    private loadState: { cancelled: boolean } | null = null;
 
     constructor(config: any) {
       this.inner = new BaseLoader(config);
@@ -214,6 +217,14 @@ export function createPrefetchLoaders(
         this.inner.load(context, config, callbacks);
         return;
       }
+
+      // 防御：上一请求未被 abort 就发起新加载（异常时序），清理旧加载
+      if (this.loadState && !this.loadState.cancelled) {
+        this.loadState.cancelled = true;
+        this.inner.abort();
+      }
+      const state = { cancelled: false };
+      this.loadState = state;
 
       const entry = cache.get(url);
       if (entry?.status === 'ready' && entry.data) {
@@ -234,6 +245,8 @@ export function createPrefetchLoaders(
         const savedContext = context;
         entry.promise
           .then((data) => {
+            // 已取消或已被新请求取代：丢弃迟到回调
+            if (state.cancelled || this.loadState !== state) return;
             cache.delete(url);
             callbacks.onSuccess(
               { url, data },
@@ -244,6 +257,8 @@ export function createPrefetchLoaders(
             prefetchAfter(url);
           })
           .catch(() => {
+            // 已取消或已被新请求取代：不回退加载
+            if (state.cancelled || this.loadState !== state) return;
             // 预取失败：回退原生加载。
             // 但主动取消（seek/abort，entry.aborted=true）时 hls.js 已放弃该分片，
             // 不回退加载，避免浪费连接或状态错乱
@@ -267,8 +282,11 @@ export function createPrefetchLoaders(
 
     abort() {
       // 🔧 真正的取消语义：hls.js seek/重新调度时会调用 abort，
-      // 此时取消 pending 主加载的预取 Promise 关联与后续预取批次，
-      // 释放浏览器连接给新位置的分片，避免快速拖动进度条后转圈不加载
+      // 1) 当前加载请求标记取消（丢弃迟到回调）
+      // 2) 取消 pending 主加载的预取 Promise 关联与后续预取批次，释放连接
+      if (this.loadState) {
+        this.loadState.cancelled = true;
+      }
       const url: string = this.context?.url;
       if (url) {
         const entry = cache.get(url);
@@ -281,6 +299,9 @@ export function createPrefetchLoaders(
     }
 
     destroy() {
+      if (this.loadState) {
+        this.loadState.cancelled = true;
+      }
       const url: string = this.context?.url;
       if (url) {
         const entry = cache.get(url);
