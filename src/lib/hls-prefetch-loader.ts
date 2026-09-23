@@ -255,8 +255,32 @@ export function createPrefetchLoaders(
       if (entry?.status === 'pending' && entry.promise) {
         // 去重：等待进行中的预取，避免重复请求
         const savedContext = context;
+        const savedConfig = config;
+        const savedCallbacks = callbacks;
+        // raced 标志：超时/成功/失败三者只执行其一
+        let raced = false;
+        // 超时保底：预取因任何原因无响应时回退原生加载，防挂死转圈
+        const timer = setTimeout(() => {
+          if (raced) return;
+          raced = true;
+          try {
+            entry.controller?.abort();
+          } catch {
+            /* 已 abort */
+          }
+          if (!state.cancelled && this.loadState === state) {
+            try {
+              this.inner.load(savedContext, savedConfig, savedCallbacks);
+            } catch {
+              /* 忽略 */
+            }
+          }
+        }, 10000);
         entry.promise
           .then((data) => {
+            if (raced) return;
+            raced = true;
+            clearTimeout(timer);
             // 已取消或已被新请求取代：丢弃迟到回调
             if (state.cancelled || this.loadState !== state) return;
             cache.delete(url);
@@ -269,13 +293,17 @@ export function createPrefetchLoaders(
             prefetchAfter(url);
           })
           .catch(() => {
+            if (raced) return;
+            raced = true;
+            clearTimeout(timer);
             // 已取消或已被新请求取代：不回退加载
             if (state.cancelled || this.loadState !== state) return;
-            // 预取失败：回退原生加载。
-            // 但主动取消（seek/abort，entry.aborted=true）时 hls.js 已放弃该分片，
-            // 不回退加载，避免浪费连接或状态错乱
-            if (!entry.aborted && this.callbacks === callbacks) {
-              this.inner.load(savedContext, config, callbacks);
+            // 预取失败或被 abort（含 seek 时 cancelPrefetchBatch 取消了
+            // 主加载正在等待的批次成员）：只要当前 load 仍有效就必须
+            // 回退原生加载。否则该分片永远无回调 → hls.js 停止调度
+            // → 转圈卡死（连续拖动进度条时的挂死根因）
+            if (this.callbacks === callbacks) {
+              this.inner.load(savedContext, savedConfig, savedCallbacks);
             }
           });
         this.context = context;
