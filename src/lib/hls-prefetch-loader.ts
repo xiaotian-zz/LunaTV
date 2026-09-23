@@ -59,6 +59,10 @@ export function createPrefetchLoaders(
   >();
   const cacheLimit = concurrency + 2;
   let disabled = false;
+  let disabledAt = 0;
+  // 熔断冷却：60s 后半开重试，反复熔断冷却翻倍（上限 10 分钟）。
+  // 源站限速/风控是波动的，永久熔断会让整个会话退化为串行加载
+  let cooldownMs = 60_000;
   let okCount = 0;
   let failCount = 0;
 
@@ -92,7 +96,19 @@ export function createPrefetchLoaders(
     );
   };
 
+  // 冷却期满后半开重试：重置统计恢复预取
+  const maybeReenable = () => {
+    if (!disabled) return;
+    if (now() - disabledAt >= cooldownMs) {
+      disabled = false;
+      okCount = 0;
+      failCount = 0;
+      cooldownMs = Math.min(cooldownMs * 2, 600_000);
+    }
+  };
+
   const prefetch = (url: string) => {
+    maybeReenable();
     if (disabled || cache.has(url)) return;
     const entry: {
       status: 'pending' | 'ready';
@@ -126,7 +142,10 @@ export function createPrefetchLoaders(
           throw new Error('prefetch aborted');
         }
         failCount += 1;
-        if (shouldDisable()) disabled = true;
+        if (shouldDisable()) {
+          disabled = true;
+          disabledAt = now();
+        }
         throw err instanceof Error ? err : new Error('prefetch failed');
       });
     cache.set(url, entry);
