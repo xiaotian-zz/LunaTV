@@ -27,10 +27,22 @@ export interface PrefetchLoaderFactory {
   playlistLoader: any;
 }
 
+export interface PrefetchLoaderOptions {
+  /**
+   * playlist（m3u8）响应转换器（如去广告过滤）。
+   * 在 parsePlaylist 抽取分片 URL 之前执行——预取定位的是过滤后
+   * 真实会播放的分片列表。与分片预取天然不冲突：过滤只作用于
+   * m3u8（playlistLoader），预取只作用于分片（fragLoader）。
+   */
+  transformPlaylist?: (body: string) => string;
+}
+
 export function createPrefetchLoaders(
   concurrency: number,
   BaseLoader: any, // Hls.DefaultConfig.loader（XHR loader 类）
+  options?: PrefetchLoaderOptions,
 ): PrefetchLoaderFactory {
+  const transformPlaylist = options?.transformPlaylist;
   // ---------- 共享状态 ----------
   const fragUrls: string[] = []; // 按播放顺序的分片 URL 列表
   const indexByUrl = new Map<string, number>();
@@ -330,6 +342,19 @@ export function createPrefetchLoaders(
           ctx: any,
           networkDetails: any,
         ) => {
+          // 先做 playlist 转换（去广告过滤），再在过滤结果上抽取分片 URL。
+          // 仅 media playlist（含 EXTINF）需要转换，master playlist 原样保留
+          if (
+            transformPlaylist &&
+            typeof response?.data === 'string' &&
+            response.data.includes('#EXTINF')
+          ) {
+            try {
+              response.data = transformPlaylist(response.data);
+            } catch {
+              /* 转换失败保留原始内容 */
+            }
+          }
           const body = toPlaylistBody(response?.data);
           if (body) {
             parsePlaylist(body, response?.url || context?.url || '');

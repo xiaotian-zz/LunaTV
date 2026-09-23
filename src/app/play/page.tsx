@@ -5264,17 +5264,26 @@ function PlayPageClient() {
                   },
                 },
 
-                /* 自定义loader */
-                loader: blockAdEnabledRef.current
-                  ? CustomHlsJsLoader
-                  : Hls.DefaultConfig.loader,
+                /* 自定义loader：仅标准档（无预取）时用广告过滤 loader */
+                loader:
+                  blockAdEnabledRef.current &&
+                  bufferConfig.prefetchConcurrency <= 1
+                    ? CustomHlsJsLoader
+                    : Hls.DefaultConfig.loader,
 
-                /* ☁️ 并发分片预取（C 优化）：增强/强力模式启用，广告过滤模式不兼容故跳过 */
-                ...(bufferConfig.prefetchConcurrency > 1 &&
-                !blockAdEnabledRef.current
+                /* ☁️ 并发分片预取（C 优化）：所有档位启用（标准 2 路）。
+                   与去广告过滤共存：过滤逻辑移入 playlistLoader
+                   （transformPlaylist，只作用于 m3u8），预取走 fragLoader
+                   （只作用于分片），互不冲突 */
+                ...(bufferConfig.prefetchConcurrency > 1
                   ? createPrefetchLoaders(
                       bufferConfig.prefetchConcurrency,
                       Hls.DefaultConfig.loader,
+                      {
+                        transformPlaylist: blockAdEnabledRef.current
+                          ? filterAdsFromM3U8
+                          : undefined,
+                      },
                     )
                   : {}),
               });
@@ -5411,21 +5420,41 @@ function PlayPageClient() {
                 }
 
                 // v1.6.13 增强：处理时间戳相关错误（直播回搜修复）
+                // 🔧 分级恢复：BUFFER_RESET 会清空全部缓冲（表现为进度条
+                // 缓冲突然清零重攒），只在短时间内反复出错时才使用；
+                // 首次错误用 startLoad 轻量重新调度，保留已缓冲内容
                 if (
                   data.details === Hls.ErrorDetails.BUFFER_APPEND_ERROR &&
                   data.err &&
                   data.err.message &&
                   data.err.message.includes('timestamp')
                 ) {
-                  console.log('时间戳错误，清理缓冲区并重新加载...');
-                  try {
-                    // 清理缓冲区后重新开始，利用v1.6.13的时间戳包装修复
-                    const currentTime = video.currentTime;
-                    hls.trigger(Hls.Events.BUFFER_RESET, undefined);
-                    hls.startLoad(currentTime);
-                  } catch (e) {
-                    console.warn('缓冲区重置失败:', e);
-                    hls.startLoad();
+                  const now = Date.now();
+                  const st = ((video as any)._tsAppendErr ||= {
+                    count: 0,
+                    last: 0,
+                  });
+                  st.count = now - st.last < 8000 ? st.count + 1 : 1;
+                  st.last = now;
+                  const currentTime = video.currentTime;
+                  if (st.count === 1) {
+                    console.warn('时间戳 append 错误，轻量恢复（保留缓冲）...');
+                    try {
+                      hls.startLoad(currentTime);
+                    } catch {
+                      /* 忽略调度异常 */
+                    }
+                  } else {
+                    console.warn(
+                      `时间戳 append 错误 x${st.count}，重建缓冲区...`,
+                    );
+                    try {
+                      hls.trigger(Hls.Events.BUFFER_RESET, undefined);
+                      hls.startLoad(currentTime);
+                    } catch (e) {
+                      console.warn('缓冲区重置失败:', e);
+                      hls.startLoad();
+                    }
                   }
                   return;
                 }
