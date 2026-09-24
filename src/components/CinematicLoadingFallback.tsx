@@ -77,10 +77,6 @@ export function CinematicLoadingFallback() {
         />
       )}
 
-      {/* Gradient overlay layers */}
-      <div className='absolute inset-0 bg-gradient-to-br from-purple-600/40 via-blue-600/30 to-pink-500/40 dark:from-purple-900/50 dark:via-blue-900/40 dark:to-pink-900/50' />
-      <div className='absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-black/20 dark:from-black/60 dark:via-transparent dark:to-black/40' />
-
       {/* Subtle animated background stars */}
       <div className='absolute inset-0 overflow-hidden'>
         {[...Array(8)].map((_, i) => (
@@ -126,7 +122,7 @@ export function CinematicLoadingFallback() {
         {/* Message with emoji - responsive text sizing */}
         <div className='mb-5 sm:mb-6 space-y-2 sm:space-y-3'>
           <div className='text-3xl sm:text-4xl'>{currentMessage.emoji}</div>
-          <h2 className='text-lg sm:text-xl font-medium text-white transition-opacity duration-500 leading-relaxed'>
+          <h2 className='text-lg sm:text-xl font-medium text-white transition-opacity duration-500 leading-relaxed drop-shadow-[0_1px_6px_rgba(0,0,0,0.6)]'>
             {currentMessage.text}
           </h2>
         </div>
