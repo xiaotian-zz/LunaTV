@@ -230,24 +230,29 @@ function filterAdsFromM3U8(type, m3u8Content) {
   // 2b. DISCONTINUITY 对包裹的广告段：
   //     两个相邻近 DISCONTINUITY 之间的分片总时长很短（≤90s）且含 <1s 碎分片
   //     —— 这类源广告 URL 无特征（hash 命名），靠此结构特征识别
+  // 2c. 同样包夹结构但不要求碎分片：插播广告普遍 15-30s、3-8 片
+  //     （实测 yzzy 源 16.5s×4 片，分片全 ≥1.7s，仅靠碎分片特征会漏）
+  // 2d. 末尾段：以 DISCONTINUITY 开头直到文件尾（后跟 ENDLIST，
+  //     没有第二个 DISCONTINUITY 包夹）的短段 —— 片尾贴片广告
   for (let i = 0; i < frags.length; i += 1) {
     if (!frags[i].disc) continue;
     let total = 0;
     let hasTiny = false;
+    let count = 0;
     let j = i;
     while (j < frags.length) {
       if (j > i && frags[j].disc) break; // 遇到下一个 DISCONTINUITY 分片
       total += frags[j].dur;
+      count += 1;
       if (frags[j].dur > 0 && frags[j].dur < 1) hasTiny = true;
       j += 1;
     }
-    if (
-      j < frags.length &&
-      frags[j].disc &&
+    const enclosed = j < frags.length && frags[j].disc;
+    const isAdSegment =
       total > 0 &&
-      total <= 90 &&
-      hasTiny
-    ) {
+      ((enclosed && total <= 90 && hasTiny) || // 2b 碎分片特征
+        (total <= 30 && count <= 8)); // 2c/2d 短插播段（完整包夹或末尾）
+    if (isAdSegment) {
       for (let k = i; k < j; k += 1) drop[k] = true;
     }
   }
