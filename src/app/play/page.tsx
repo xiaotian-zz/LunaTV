@@ -45,6 +45,7 @@ import DanmuManualMatchModal, {
 } from '@/components/DanmuManualMatchModal';
 import DownloadEpisodeSelector from '@/components/download/DownloadEpisodeSelector';
 import EpisodeSelector from '@/components/EpisodeSelector';
+import { HlsDebugOverlay } from '@/components/HlsDebugOverlay';
 import NetDiskSearchResults from '@/components/NetDiskSearchResults';
 import PageLayout from '@/components/PageLayout';
 import BackToTopButton from '@/components/play/BackToTopButton';
@@ -7372,6 +7373,8 @@ function PlayPageClient() {
 
   return (
     <>
+      {/* ?hlsdebug=1 屏幕诊断悬浮层（iPad Safari 等移动端无法看控制台时排查用） */}
+      <HlsDebugOverlay />
       <PageLayout activePath='/play'>
         <div className='flex flex-col gap-3 py-4 px-5 lg:px-[3rem] 2xl:px-20 pb-40 md:pb-safe-bottom'>
           {/* 第一行：影片标题（小屏幕用，大屏幕在 PlayInfoPanel 里） */}
