@@ -5187,6 +5187,14 @@ function PlayPageClient() {
               // 在函数内部重新检测iOS13+设备
               const localIsIOS13 = isIOS13;
 
+              // 以 iOS/iPadOS 17 为界分类：Safari 大版本与系统大版本一致
+              // （Safari 17 = iOS 17，Safari 26 = iPadOS 26；解析不到按旧设备保守处理）
+              // 17+ 设备内存充裕，缓冲用用户配置（与桌面一致）；17 以下沿用保守配置
+              const uaSafariMajor = Number(
+                (userAgent.match(/Version\/(\d+)/) || [])[1] || 0,
+              );
+              const localConservativeCaps = localIsIOS13 && uaSafariMajor < 17;
+
               // 获取用户的缓冲模式配置
               const bufferConfig = getHlsBufferConfig();
 
@@ -5199,46 +5207,59 @@ function PlayPageClient() {
                 // 点播场景下会导致：缓冲区过小、网络波动时容易卡顿、CPU 负担增加
                 lowLatencyMode: false,
 
-                // 🎯 官方推荐的缓冲策略 - iOS13+ 特别优化
+                // 🎯 官方推荐的缓冲策略 - 旧苹果设备保守 / iPadOS 17+ 新 iPad 与桌面一致
                 /* 缓冲长度配置 - 移动端应用用户配置但设安全上限（MSE 内存约束） */
                 maxBufferLength: isMobile
-                  ? Math.min(
-                      bufferConfig.maxBufferLength,
-                      localIsIOS13 ? 15 : isIOS ? 20 : 25, // iOS13+: 15s, iOS: 20s, Android: 25s
-                    )
+                  ? localConservativeCaps
+                    ? Math.min(bufferConfig.maxBufferLength, 15) // 旧苹果设备保命上限
+                    : localIsIOS13
+                      ? bufferConfig.maxBufferLength // iOS/iPadOS 17+：与桌面一致
+                      : Math.min(bufferConfig.maxBufferLength, 25) // Android
                   : bufferConfig.maxBufferLength, // 桌面直接使用用户配置
                 backBufferLength: isMobile
-                  ? Math.min(
-                      bufferConfig.backBufferLength,
-                      localIsIOS13 ? 10 : isIOS ? 15 : 20,
-                    )
+                  ? localConservativeCaps
+                    ? Math.min(bufferConfig.backBufferLength, 10)
+                    : localIsIOS13
+                      ? bufferConfig.backBufferLength
+                      : Math.min(bufferConfig.backBufferLength, 20)
                   : bufferConfig.backBufferLength, // 桌面直接使用用户配置
 
                 /* 缓冲大小配置 - 移动端同样应用用户配置（带上限） */
                 maxBufferSize: isMobile
-                  ? Math.min(
-                      bufferConfig.maxBufferSize,
-                      localIsIOS13
-                        ? 30 * 1000 * 1000
-                        : isIOS
-                          ? 50 * 1000 * 1000
-                          : 60 * 1000 * 1000, // iOS13+: 30MB, iOS: 50MB, Android: 60MB
-                    )
+                  ? localConservativeCaps
+                    ? Math.min(bufferConfig.maxBufferSize, 30 * 1000 * 1000)
+                    : localIsIOS13
+                      ? bufferConfig.maxBufferSize
+                      : Math.min(bufferConfig.maxBufferSize, 60 * 1000 * 1000) // Android
                   : bufferConfig.maxBufferSize, // 桌面直接使用用户配置
 
                 /* 网络加载优化 - 参考 defaultLoadPolicy */
-                maxLoadingDelay: isMobile ? (localIsIOS13 ? 2 : 3) : 4, // iOS13+设备更快超时
-                maxBufferHole: isMobile ? (localIsIOS13 ? 0.05 : 0.1) : 0.1, // 减少缓冲洞容忍度
+                maxLoadingDelay: isMobile ? (localConservativeCaps ? 2 : 3) : 4, // 旧设备更快超时
+                maxBufferHole: isMobile
+                  ? localConservativeCaps
+                    ? 0.05
+                    : 0.1
+                  : 0.1, // 减少缓冲洞容忍度
 
                 /* Fragment管理 - 参考官方配置 */
                 liveDurationInfinity: false, // 避免无限缓冲 (官方默认false)
-                liveBackBufferLength: isMobile ? (localIsIOS13 ? 3 : 5) : null, // 已废弃，保持兼容
+                liveBackBufferLength: isMobile
+                  ? localConservativeCaps
+                    ? 3
+                    : 5
+                  : null, // 已废弃，保持兼容
 
                 // v1.7.0 新增：appendBuffer 卡死超时兜底，避免个别设备 SourceBuffer 无响应导致播放静默卡住不报错
                 appendTimeout: isMobile ? 8000 : 10000,
 
                 /* 高级优化配置 - 参考 StreamControllerConfig */
-                maxMaxBufferLength: isMobile ? (localIsIOS13 ? 60 : 120) : 600, // 最大缓冲长度限制
+                maxMaxBufferLength: isMobile
+                  ? localConservativeCaps
+                    ? 60
+                    : localIsIOS13
+                      ? 600
+                      : 120
+                  : 600, // 最大缓冲长度限制
                 maxFragLookUpTolerance: isMobile ? 0.1 : 0.25, // 片段查找容忍度
 
                 /* ABR优化 - 参考 ABRControllerConfig */
@@ -5249,7 +5270,7 @@ function PlayPageClient() {
 
                 /* 启动优化 */
                 startFragPrefetch: true, // 全平台开启起播预取（点击播放即预取首分片）
-                testBandwidth: !localIsIOS13, // iOS13+关闭带宽测试以快速启动
+                testBandwidth: !localConservativeCaps, // 旧设备关闭带宽测试以快速启动
 
                 /* Loader配置 - 参考官方 fragLoadPolicy */
                 fragLoadPolicy: {
