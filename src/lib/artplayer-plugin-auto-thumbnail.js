@@ -23,7 +23,14 @@ function create({ url, width, number }, callback) {
 
     function seekAndDraw(index) {
       canvas.toBlob((blob) => {
-        URL.revokeObjectURL(blobUrl);
+        // Safari 26.x 在 canvas 被跨域污染时 toBlob 回调返回 null，
+        // URL.createObjectURL(null) 会抛 "TypeError: Type error"
+        if (!blob) return;
+        try {
+          URL.revokeObjectURL(blobUrl);
+        } catch {
+          /* 忽略 */
+        }
         blobUrl = URL.createObjectURL(blob);
 
         callback({
@@ -36,7 +43,13 @@ function create({ url, width, number }, callback) {
       video.currentTime = (duration * index) / number;
 
       video.onseeked = () => {
-        ctx.drawImage(video, (index % 10) * width, Math.floor(index / 10) * height, width, height);
+        ctx.drawImage(
+          video,
+          (index % 10) * width,
+          Math.floor(index / 10) * height,
+          width,
+          height,
+        );
         seekAndDraw(index + 1);
       };
     }

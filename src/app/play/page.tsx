@@ -45,7 +45,6 @@ import DanmuManualMatchModal, {
 } from '@/components/DanmuManualMatchModal';
 import DownloadEpisodeSelector from '@/components/download/DownloadEpisodeSelector';
 import EpisodeSelector from '@/components/EpisodeSelector';
-import { HlsDebugOverlay } from '@/components/HlsDebugOverlay';
 import NetDiskSearchResults from '@/components/NetDiskSearchResults';
 import PageLayout from '@/components/PageLayout';
 import BackToTopButton from '@/components/play/BackToTopButton';
@@ -3228,32 +3227,31 @@ function PlayPageClient() {
   };
 
   class CustomHlsJsLoader extends Hls.DefaultConfig.loader {
-    constructor(config: any) {
-      super(config);
-      const load = this.load.bind(this);
-      this.load = function (context: any, config: any, callbacks: any) {
-        // 拦截manifest和level请求
-        if (
-          (context as any).type === 'manifest' ||
-          (context as any).type === 'level'
+    // ⚠️ 必须方法重写（与 hls-prefetch-loader.ts 的 PrefetchFragLoader 同模式）。
+    // 旧版在构造器里 `const load = this.load.bind(this); this.load = function...`
+    // 覆盖实例方法，iPadOS 26.2 主线程模式（enableWorker:false）下触发
+    // hls.js 内部 config 丢失（TypeError: ... 'e.xhrSetup'），播放器
+    // 初始化中断 → 回退原生 HLS 零缓冲。
+    load(context: any, config: any, callbacks: any) {
+      if (
+        (context as any)?.type === 'manifest' ||
+        (context as any)?.type === 'level'
+      ) {
+        const onSuccess = callbacks.onSuccess;
+        callbacks.onSuccess = function (
+          response: any,
+          stats: any,
+          ctx: any,
+          networkDetails: any,
         ) {
-          const onSuccess = callbacks.onSuccess;
-          callbacks.onSuccess = function (
-            response: any,
-            stats: any,
-            context: any,
-          ) {
-            // 如果是m3u8文件，处理内容以移除广告分段
-            if (response.data && typeof response.data === 'string') {
-              // 过滤掉广告段 - 实现更精确的广告过滤逻辑
-              response.data = filterAdsFromM3U8(response.data);
-            }
-            return onSuccess(response, stats, context, null);
-          };
-        }
-        // 执行原始load方法
-        load(context, config, callbacks);
-      };
+          // 如果是m3u8文件，处理内容以移除广告分段
+          if (response.data && typeof response.data === 'string') {
+            response.data = filterAdsFromM3U8(response.data);
+          }
+          return onSuccess(response, stats, ctx, networkDetails);
+        };
+      }
+      return super.load(context, config, callbacks);
     }
   }
 
@@ -4875,6 +4873,33 @@ function PlayPageClient() {
     }
   };
 
+  // customType 调用兜底：ArtPlayer 的 url setter 是 async（await 下一帧后
+  // 才调 customType），在部分 Safari 上该时机不可靠（实测 iPadOS 26 上
+  // customType 从未被调用，视频半死不活）。挂载 800ms 后检查：hls 未挂载
+  // 且未因初始化失败而回退原生 → 手动补调 customType。初始化与换集/换源
+  // （switchUrl/switchQuality 同样走 url setter）共用。
+  const ensureHlsAttached = (url: string) => {
+    setTimeout(() => {
+      try {
+        const art = artPlayerRef.current;
+        const v = art?.video as
+          | (HTMLVideoElement & { hls?: unknown; _hlsInitFailed?: boolean })
+          | undefined;
+        if (art && v && !v.hls && !v._hlsInitFailed) {
+          console.log('customType 未触发，手动初始化 hls.js');
+          (
+            art.option.customType as Record<
+              string,
+              (v: HTMLVideoElement, u: string) => void
+            >
+          ).m3u8(v, url);
+        }
+      } catch {
+        /* 忽略 */
+      }
+    }, 800);
+  };
+
   useEffect(() => {
     // 异步初始化播放器，避免SSR问题
     const initPlayer = async () => {
@@ -5009,6 +5034,10 @@ function PlayPageClient() {
                 artPlayerRef.current.title = `${videoTitle} - 第${currentEpisodeIndex + 1}集`;
                 artPlayerRef.current.poster = videoCover;
                 console.log('✅ 源切换完成');
+
+                // customType 调用兜底：switchUrl/switchQuality 走 ArtPlayer
+                // 的 async url setter，Safari 26 上 customType 可能不被调用
+                ensureHlsAttached(videoUrl);
 
                 // 🔥 重置集数切换标识
                 if (isEpisodeChange) {
@@ -5179,6 +5208,9 @@ function PlayPageClient() {
                 video.hls.destroy();
               }
 
+              // 新一轮初始化开始，清除上次失败标记（换集后允许重试）
+              (video as any)._hlsInitFailed = false;
+
               // ☁️ 新地址加载，重置 Worker 代理 / 第一方代理降级标记
               (video as any)._proxyFallbackDone = false;
               (video as any)._firstPartyProxyFallbackDone = false;
@@ -5188,9 +5220,8 @@ function PlayPageClient() {
               // 在函数内部重新检测iOS13+设备
               const localIsIOS13 = isIOS13;
 
-              // 以 iOS/iPadOS 17 为界分类：Safari 大版本与系统大版本一致
-              // （Safari 17 = iOS 17，Safari 26 = iPadOS 26；解析不到按旧设备保守处理）
-              // 17+ 设备内存充裕，缓冲用用户配置（与桌面一致）；17 以下沿用保守配置
+              // 以 iOS/iPadOS 17 为界分级：17+ 跟随后台缓冲设置（标准/增强/强力 = 1x/2x/3x），
+              // 17 以下沿用保守配置。
               const uaSafariMajor = Number(
                 (userAgent.match(/Version\/(\d+)/) || [])[1] || 0,
               );
@@ -5200,158 +5231,193 @@ function PlayPageClient() {
               const bufferConfig = getHlsBufferConfig();
 
               // 🚀 根据 HLS.js 官方源码的最佳实践配置
-              const hls = new Hls({
-                debug: false,
-                enableWorker: true,
-                // 关闭低延迟模式以改善点播体验 - Issue #194
-                // HLS.js 默认 lowLatencyMode: true，主要为 LL-HLS 直播流设计
-                // 点播场景下会导致：缓冲区过小、网络波动时容易卡顿、CPU 负担增加
-                lowLatencyMode: false,
+              // Safari 26.x 上 new Hls/attachMedia（MMS objectURL 创建）
+              // 可能间歇性抛 "Type error"——ArtPlayer 的 customType 调用
+              // 无 try/catch，一旦抛出整个播放器初始化中断、回退原生
+              // 半死路径。这里全链捕获，失败时直接走可用的原生 HLS。
+              let hls: any;
+              try {
+                hls = new Hls({
+                  debug: false,
+                  // iPadOS 26.2 Safari 上 URL.createObjectURL(blob) 抛
+                  // "TypeError: Type error"，导致 hls.js worker 创建失败、
+                  // 播放器初始化中断（诊断堆栈：createObjectURL@[native code]）。
+                  // iOS 全系改用主线程模式绕开；Apple 芯片性能足以承载解封装。
+                  enableWorker: !localIsIOS13,
+                  // Safari 26.x（iPad/iPhone）的 ManagedMediaSource attach
+                  // 路径（URL.createObjectURL(mms)）间歇性抛 "Type error"
+                  // → 播放器初始化中断。有传统 MediaSource 时强制使用
+                  // （与 Chrome 同款稳定路径），仅 MMS-only 设备回落 MMS。
+                  preferManagedMediaSource: false,
+                  // 关闭低延迟模式以改善点播体验 - Issue #194
+                  // HLS.js 默认 lowLatencyMode: true，主要为 LL-HLS 直播流设计
+                  // 点播场景下会导致：缓冲区过小、网络波动时容易卡顿、CPU 负担增加
+                  lowLatencyMode: false,
 
-                // 🎯 官方推荐的缓冲策略 - 旧苹果设备保守 / iPadOS 17+ 新 iPad 与桌面一致
-                /* 缓冲长度配置 - 移动端应用用户配置但设安全上限（MSE 内存约束） */
-                maxBufferLength: isMobile
-                  ? localConservativeCaps
-                    ? Math.min(bufferConfig.maxBufferLength, 15) // 旧苹果设备保命上限
-                    : localIsIOS13
-                      ? bufferConfig.maxBufferLength // iOS/iPadOS 17+：与桌面一致
-                      : Math.min(bufferConfig.maxBufferLength, 25) // Android
-                  : bufferConfig.maxBufferLength, // 桌面直接使用用户配置
-                backBufferLength: isMobile
-                  ? localConservativeCaps
-                    ? Math.min(bufferConfig.backBufferLength, 10)
-                    : localIsIOS13
-                      ? bufferConfig.backBufferLength
-                      : Math.min(bufferConfig.backBufferLength, 20)
-                  : bufferConfig.backBufferLength, // 桌面直接使用用户配置
+                  // 🎯 官方推荐的缓冲策略 - 旧苹果设备保守 / iPadOS 17+ 新 iPad 与桌面一致
+                  /* 缓冲长度配置 - 移动端应用用户配置但设安全上限（MSE 内存约束） */
+                  maxBufferLength: isMobile
+                    ? localConservativeCaps
+                      ? Math.min(bufferConfig.maxBufferLength, 15) // 旧苹果设备保命上限
+                      : localIsIOS13
+                        ? bufferConfig.maxBufferLength // iOS/iPadOS 17+：与桌面一致
+                        : Math.min(bufferConfig.maxBufferLength, 25) // Android
+                    : bufferConfig.maxBufferLength, // 桌面直接使用用户配置
+                  backBufferLength: isMobile
+                    ? localConservativeCaps
+                      ? Math.min(bufferConfig.backBufferLength, 10)
+                      : localIsIOS13
+                        ? bufferConfig.backBufferLength
+                        : Math.min(bufferConfig.backBufferLength, 20)
+                    : bufferConfig.backBufferLength, // 桌面直接使用用户配置
 
-                /* 缓冲大小配置 - 移动端同样应用用户配置（带上限） */
-                maxBufferSize: isMobile
-                  ? localConservativeCaps
-                    ? Math.min(bufferConfig.maxBufferSize, 30 * 1000 * 1000)
-                    : localIsIOS13
-                      ? bufferConfig.maxBufferSize
-                      : Math.min(bufferConfig.maxBufferSize, 60 * 1000 * 1000) // Android
-                  : bufferConfig.maxBufferSize, // 桌面直接使用用户配置
+                  /* 缓冲大小配置 - 移动端同样应用用户配置（带上限） */
+                  maxBufferSize: isMobile
+                    ? localConservativeCaps
+                      ? Math.min(bufferConfig.maxBufferSize, 30 * 1000 * 1000)
+                      : localIsIOS13
+                        ? bufferConfig.maxBufferSize
+                        : Math.min(bufferConfig.maxBufferSize, 60 * 1000 * 1000) // Android
+                    : bufferConfig.maxBufferSize, // 桌面直接使用用户配置
 
-                /* 网络加载优化 - 参考 defaultLoadPolicy */
-                maxLoadingDelay: isMobile ? (localConservativeCaps ? 2 : 3) : 4, // 旧设备更快超时
-                maxBufferHole: isMobile
-                  ? localConservativeCaps
-                    ? 0.05
-                    : 0.1
-                  : 0.1, // 减少缓冲洞容忍度
+                  /* 网络加载优化 - 参考 defaultLoadPolicy */
+                  maxLoadingDelay: isMobile
+                    ? localConservativeCaps
+                      ? 2
+                      : 3
+                    : 4, // 旧设备更快超时
+                  maxBufferHole: isMobile
+                    ? localConservativeCaps
+                      ? 0.05
+                      : 0.1
+                    : 0.1, // 减少缓冲洞容忍度
 
-                /* Fragment管理 - 参考官方配置 */
-                liveDurationInfinity: false, // 避免无限缓冲 (官方默认false)
-                liveBackBufferLength: isMobile
-                  ? localConservativeCaps
-                    ? 3
-                    : 5
-                  : null, // 已废弃，保持兼容
+                  /* Fragment管理 - 参考官方配置 */
+                  liveDurationInfinity: false, // 避免无限缓冲 (官方默认false)
+                  liveBackBufferLength: isMobile
+                    ? localConservativeCaps
+                      ? 3
+                      : 5
+                    : null, // 已废弃，保持兼容
 
-                // v1.7.0 新增：appendBuffer 卡死超时兜底，避免个别设备 SourceBuffer 无响应导致播放静默卡住不报错
-                appendTimeout: isMobile ? 8000 : 10000,
+                  // v1.7.0 新增：appendBuffer 卡死超时兜底，避免个别设备 SourceBuffer 无响应导致播放静默卡住不报错
+                  appendTimeout: isMobile ? 8000 : 10000,
 
-                /* 高级优化配置 - 参考 StreamControllerConfig */
-                maxMaxBufferLength: isMobile
-                  ? localConservativeCaps
-                    ? 60
-                    : localIsIOS13
-                      ? 600
-                      : 120
-                  : 600, // 最大缓冲长度限制
-                maxFragLookUpTolerance: isMobile ? 0.1 : 0.25, // 片段查找容忍度
+                  /* 高级优化配置 - 参考 StreamControllerConfig */
+                  maxMaxBufferLength: isMobile
+                    ? localConservativeCaps
+                      ? 60
+                      : localIsIOS13
+                        ? 600
+                        : 120
+                    : 600, // 最大缓冲长度限制
+                  maxFragLookUpTolerance: isMobile ? 0.1 : 0.25, // 片段查找容忍度
 
-                /* ABR优化 - 参考 ABRControllerConfig */
-                abrEwmaFastLive: isMobile ? 2 : 3, // 移动端更快的码率切换
-                abrEwmaSlowLive: isMobile ? 6 : 9,
-                abrBandWidthFactor: isMobile ? 0.8 : 0.95, // 移动端更保守的带宽估计
-                abrEwmaDefaultEstimate: 2500000, // 初始带宽估计 2.5Mbps（采集源码率普遍 2000k），避免起播选低码率档
+                  /* ABR优化 - 参考 ABRControllerConfig */
+                  abrEwmaFastLive: isMobile ? 2 : 3, // 移动端更快的码率切换
+                  abrEwmaSlowLive: isMobile ? 6 : 9,
+                  abrBandWidthFactor: isMobile ? 0.8 : 0.95, // 移动端更保守的带宽估计
+                  abrEwmaDefaultEstimate: 2500000, // 初始带宽估计 2.5Mbps（采集源码率普遍 2000k），避免起播选低码率档
 
-                /* 启动优化 */
-                startFragPrefetch: true, // 全平台开启起播预取（点击播放即预取首分片）
-                testBandwidth: !localConservativeCaps, // 旧设备关闭带宽测试以快速启动
+                  /* 启动优化 */
+                  startFragPrefetch: true, // 全平台开启起播预取（点击播放即预取首分片）
+                  testBandwidth: !localConservativeCaps, // 旧设备关闭带宽测试以快速启动
 
-                /* Loader配置 - 参考官方 fragLoadPolicy */
-                fragLoadPolicy: {
-                  default: {
-                    maxTimeToFirstByteMs: isMobile ? 6000 : 10000,
-                    maxLoadTimeMs: isMobile ? 60000 : 120000,
-                    timeoutRetry: {
-                      maxNumRetry: isMobile ? 2 : 4,
-                      retryDelayMs: 0,
-                      maxRetryDelayMs: 0,
-                    },
-                    errorRetry: {
-                      maxNumRetry: isMobile ? 3 : 6,
-                      retryDelayMs: 1000,
-                      maxRetryDelayMs: isMobile ? 4000 : 8000,
+                  /* Loader配置 - 参考官方 fragLoadPolicy */
+                  fragLoadPolicy: {
+                    default: {
+                      maxTimeToFirstByteMs: isMobile ? 6000 : 10000,
+                      maxLoadTimeMs: isMobile ? 60000 : 120000,
+                      timeoutRetry: {
+                        maxNumRetry: isMobile ? 2 : 4,
+                        retryDelayMs: 0,
+                        maxRetryDelayMs: 0,
+                      },
+                      errorRetry: {
+                        maxNumRetry: isMobile ? 3 : 6,
+                        retryDelayMs: 1000,
+                        maxRetryDelayMs: isMobile ? 4000 : 8000,
+                      },
                     },
                   },
-                },
 
-                /* 自定义loader：仅标准档（无预取）时用广告过滤 loader */
-                loader:
-                  blockAdEnabledRef.current &&
-                  bufferConfig.prefetchConcurrency <= 1
-                    ? CustomHlsJsLoader
-                    : Hls.DefaultConfig.loader,
+                  /* 自定义loader：仅标准档（无预取）时用广告过滤 loader */
+                  loader:
+                    blockAdEnabledRef.current &&
+                    bufferConfig.prefetchConcurrency <= 1
+                      ? CustomHlsJsLoader
+                      : Hls.DefaultConfig.loader,
 
-                /* ☁️ 并发分片预取（C 优化）：所有档位启用（标准 2 路）。
+                  /* ☁️ 并发分片预取（C 优化）：所有档位启用（标准 2 路）。
                    与去广告过滤共存：过滤逻辑移入 playlistLoader
                    （transformPlaylist，只作用于 m3u8），预取走 fragLoader
                    （只作用于分片），互不冲突 */
-                ...(bufferConfig.prefetchConcurrency > 1
-                  ? createPrefetchLoaders(
-                      bufferConfig.prefetchConcurrency,
-                      Hls.DefaultConfig.loader,
-                      {
-                        transformPlaylist: (body: string, baseUrl: string) => {
-                          let out = body;
-                          // 1) 去广告过滤（开关开启时）
-                          if (blockAdEnabledRef.current) {
-                            try {
-                              out = filterAdsFromM3U8(out);
-                            } catch {
-                              /* 过滤失败保留原始内容 */
+                  ...(bufferConfig.prefetchConcurrency > 1
+                    ? createPrefetchLoaders(
+                        bufferConfig.prefetchConcurrency,
+                        Hls.DefaultConfig.loader,
+                        {
+                          transformPlaylist: (
+                            body: string,
+                            baseUrl: string,
+                          ) => {
+                            let out = body;
+                            // 1) 去广告过滤（开关开启时）
+                            if (blockAdEnabledRef.current) {
+                              try {
+                                out = filterAdsFromM3U8(out);
+                              } catch {
+                                /* 过滤失败保留原始内容 */
+                              }
                             }
-                          }
-                          // 2) 分片 URL 统一改写为本站 segment 代理。
-                          //    m3u8 经 Worker 代理转发时只回传原始内容，
-                          //    分片仍是源站 URL，直连会被封源站的墙全部
-                          //    超时（10s+ 零字节）。统一走本站 /api/proxy/
-                          //    segment 由服务端转发，无论 m3u8 从哪层加载
-                          //    （直连/Worker/第一方代理）都稳定。
-                          try {
-                            const origin = window.location.origin;
-                            out = out
-                              .split('\n')
-                              .map((line: string) => {
-                                const t = line.trim();
-                                if (!t || t.startsWith('#')) return line;
-                                try {
-                                  const abs = new URL(t, baseUrl).toString();
-                                  if (abs.startsWith(origin)) return line;
-                                  return `${origin}/api/proxy/segment?url=${encodeURIComponent(abs)}`;
-                                } catch {
-                                  return line;
-                                }
-                              })
-                              .join('\n');
-                          } catch {
-                            /* 改写失败保留原始内容 */
-                          }
-                          return out;
+                            // 2) 分片 URL 统一改写为本站 segment 代理。
+                            //    m3u8 经 Worker 代理转发时只回传原始内容，
+                            //    分片仍是源站 URL，直连会被封源站的墙全部
+                            //    超时（10s+ 零字节）。统一走本站 /api/proxy/
+                            //    segment 由服务端转发，无论 m3u8 从哪层加载
+                            //    （直连/Worker/第一方代理）都稳定。
+                            try {
+                              const origin = window.location.origin;
+                              out = out
+                                .split('\n')
+                                .map((line: string) => {
+                                  const t = line.trim();
+                                  if (!t || t.startsWith('#')) return line;
+                                  try {
+                                    const abs = new URL(t, baseUrl).toString();
+                                    if (abs.startsWith(origin)) return line;
+                                    return `${origin}/api/proxy/segment?url=${encodeURIComponent(abs)}`;
+                                  } catch {
+                                    return line;
+                                  }
+                                })
+                                .join('\n');
+                            } catch {
+                              /* 改写失败保留原始内容 */
+                            }
+                            return out;
+                          },
                         },
-                      },
-                    )
-                  : {}),
-              });
+                      )
+                    : {}),
+                });
 
-              hls.loadSource(url);
-              hls.attachMedia(video);
-              video.hls = hls;
+                hls.loadSource(url);
+                hls.attachMedia(video);
+                video.hls = hls;
+              } catch (err) {
+                console.error('hls.js 初始化失败，回退原生 HLS:', err);
+                (video as any)._hlsInitFailed = true;
+                try {
+                  hls?.destroy?.();
+                } catch {
+                  /* 忽略 */
+                }
+                (video as any).hls = undefined;
+                video.removeAttribute('crossorigin');
+                video.src = `/api/proxy/m3u8?url=${encodeURIComponent(url)}`;
+                return;
+              }
 
               ensureVideoSource(video, url);
 
@@ -6064,11 +6130,20 @@ function PlayPageClient() {
             // 毛玻璃效果控制栏插件 - 现代化悬浮设计
             // CSS已优化：桌面98%宽度，移动端100%，按钮可自动缩小适应
             artplayerPluginLiquidGlass(),
-            artplayerPluginAutoThumbnail({
-              width: 160,
-              number: 100,
-              scale: 1,
-            }),
+            // Safari 26.x 上该插件隐藏 video 直连采集源（crossOrigin 模式）
+            // → canvas 被污染 → toBlob 回调 null → URL.createObjectURL(null)
+            // 抛 "TypeError: Type error"（全局错误，干扰诊断并可能与
+            // 播放器初始化竞态）；且隐藏 video 会额外下载整部视频。
+            // Safari 全系禁用，Chrome 保持开启。
+            ...((isIOS13 || isSafari
+              ? []
+              : [
+                  artplayerPluginAutoThumbnail({
+                    width: 160,
+                    number: 100,
+                    scale: 1,
+                  }),
+                ]) as any[]),
             artplayerPluginSeekButtons({
               seekTime: parseInt(localStorage.getItem('seek_time') || '10', 10),
               mobileLayout: (localStorage.getItem('seek_layout') || 'both') as
@@ -6079,6 +6154,9 @@ function PlayPageClient() {
 
         // 设置 Portal 容器为 ArtPlayer 的 $player 元素（全屏时只有该元素可见）
         setPortalContainer(artPlayerRef.current.template.$player);
+
+        // customType 调用兜底（换集/换源共用，见 ensureHlsAttached 定义）
+        ensureHlsAttached(videoUrl);
 
         // 监听播放器事件
         artPlayerRef.current.on('ready', async () => {
@@ -7373,8 +7451,6 @@ function PlayPageClient() {
 
   return (
     <>
-      {/* ?hlsdebug=1 屏幕诊断悬浮层（iPad Safari 等移动端无法看控制台时排查用） */}
-      <HlsDebugOverlay />
       <PageLayout activePath='/play'>
         <div className='flex flex-col gap-3 py-4 px-5 lg:px-[3rem] 2xl:px-20 pb-40 md:pb-safe-bottom'>
           {/* 第一行：影片标题（小屏幕用，大屏幕在 PlayInfoPanel 里） */}
