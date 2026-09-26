@@ -2703,6 +2703,7 @@ function PlayPageClient() {
         // 2. 然后清理 video 和 HLS
         if (video) {
           video.pause();
+          (video as any)._clearStallMonitor?.();
           console.log('[Cleanup] 视频已暂停');
         }
 
@@ -5222,10 +5223,16 @@ function PlayPageClient() {
 
               // 以 iOS/iPadOS 17 为界分级：17+ 跟随后台缓冲设置（标准/增强/强力 = 1x/2x/3x），
               // 17 以下沿用保守配置。
-              const uaSafariMajor = Number(
-                (userAgent.match(/Version\/(\d+)/) || [])[1] || 0,
-              );
-              const localConservativeCaps = localIsIOS13 && uaSafariMajor < 17;
+              // ⚠️ 不能用 UA 版本号判定：iOS 26.x 的 Safari UA 把版本伪装
+              // 成 18_x（实测 iPhone OS 26.1 → "iPhone OS 18_7 like Mac OS X"），
+              // 按 UA 判会把 26 误判为旧设备锁死 15s 保命缓冲。
+              // 改用特性检测：ManagedMediaSource 是 iOS/iPadOS 17.1+ 才有的
+              // API——能在这里跑 hls.js 的苹果设备必然有 MMS（无 MMS 的旧
+              // 设备走原生 HLS 根本到不了这段配置），有 MMS 即放行三档。
+              const localConservativeCaps =
+                localIsIOS13 &&
+                typeof (window as any).ManagedMediaSource === 'undefined' &&
+                typeof (window as any).MediaSource === 'undefined';
 
               // 获取用户的缓冲模式配置
               const bufferConfig = getHlsBufferConfig();
@@ -5536,6 +5543,13 @@ function PlayPageClient() {
 
               hls.on(Hls.Events.ERROR, function (event: any, data: any) {
                 console.error('HLS Error:', event, data);
+                // 记录最近一次 hls 错误详情，供卡死自动上报快照引用
+                (video as any)._lastHlsErrorDetail = {
+                  type: data?.type,
+                  details: data?.details,
+                  fatal: data?.fatal,
+                  ts: Date.now(),
+                };
 
                 // v1.6.15 改进：优化了播放列表末尾空片段/间隙处理，改进了音频TS片段duration处理
                 // v1.6.13 增强：处理片段解析错误（针对initPTS修复）
@@ -5645,6 +5659,105 @@ function PlayPageClient() {
                   }
                 }
               });
+
+              // 🩺 iOS「有缓冲但不播」卡死自动上报：waiting 状态持续 6s
+              // 且播放头不前进时收集快照 POST 到 /api/debug/stall-report，
+              // 用于远程诊断 iOS 26 MMS 黑屏转圈类问题。每次加载最多报 2 次。
+              const stallVideo = video as any;
+              stallVideo._clearStallMonitor?.();
+              const stallState = { waitingSince: 0, lastTime: 0, reported: 0 };
+              const onStallWaiting = () => {
+                if (!stallState.waitingSince) {
+                  stallState.waitingSince = Date.now();
+                  stallState.lastTime = video.currentTime;
+                }
+              };
+              const onStallPlaying = () => {
+                stallState.waitingSince = 0;
+              };
+              video.addEventListener('waiting', onStallWaiting);
+              video.addEventListener('playing', onStallPlaying);
+              const stallTimer = setInterval(() => {
+                if (!stallState.waitingSince || stallState.reported >= 2) {
+                  return;
+                }
+                if (video.currentTime !== stallState.lastTime) {
+                  stallState.lastTime = video.currentTime;
+                  stallState.waitingSince = Date.now();
+                  return;
+                }
+                const stallMs = Date.now() - stallState.waitingSince;
+                if (stallMs < 6000) return;
+                stallState.reported += 1;
+                stallState.waitingSince = Date.now();
+                try {
+                  const ranges: { s: number; e: number }[] = [];
+                  const b = video.buffered;
+                  for (let i = 0; i < Math.min(b.length, 5); i += 1) {
+                    ranges.push({
+                      s: +b.start(i).toFixed(1),
+                      e: +b.end(i).toFixed(1),
+                    });
+                  }
+                  const cfg = hls?.config || {};
+                  const mms = hls?.mediaSource;
+                  const sbs: Record<string, unknown>[] = [];
+                  try {
+                    const sbList = mms?.sourceBuffers;
+                    for (let i = 0; i < sbList?.length; i += 1) {
+                      const sbBuf = sbList[i].buffered;
+                      sbs.push({
+                        updating: sbList[i].updating,
+                        bufferedLen: sbBuf?.length,
+                        bufferedEnd:
+                          sbBuf?.length > 0
+                            ? +sbBuf.end(sbBuf.length - 1).toFixed(1)
+                            : 0,
+                      });
+                    }
+                  } catch {
+                    /* SourceBuffer 状态读取失败不阻塞上报 */
+                  }
+                  fetch('/api/debug/stall-report', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      ua: navigator.userAgent.slice(0, 120),
+                      stallMs,
+                      currentTime: +video.currentTime.toFixed(1),
+                      readyState: video.readyState,
+                      networkState: video.networkState,
+                      paused: video.paused,
+                      videoError: video.error
+                        ? {
+                            code: video.error.code,
+                            message: video.error.message,
+                          }
+                        : null,
+                      bufferedRanges: ranges,
+                      hlsUrl: String(
+                        stallVideo._currentHlsUrl || url || '',
+                      ).slice(0, 100),
+                      hlsVersion: hls?.version || null,
+                      currentLevel: hls?.currentLevel,
+                      maxBufferLength: cfg.maxBufferLength,
+                      backBufferLength: cfg.backBufferLength,
+                      maxBufferSize: cfg.maxBufferSize,
+                      mmsReadyState: mms?.readyState ?? null,
+                      mmsSourceBuffers: sbs,
+                      lastHlsError: stallVideo._lastHlsErrorDetail || null,
+                    }),
+                    keepalive: true,
+                  }).catch(() => {});
+                } catch {
+                  /* 上报失败不影响播放 */
+                }
+              }, 4000);
+              stallVideo._clearStallMonitor = () => {
+                clearInterval(stallTimer);
+                video.removeEventListener('waiting', onStallWaiting);
+                video.removeEventListener('playing', onStallPlaying);
+              };
             },
           },
           icons: {
