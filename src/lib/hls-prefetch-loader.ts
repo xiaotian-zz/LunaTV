@@ -43,7 +43,24 @@ export interface PrefetchLoaderOptions {
    * 第二参数 baseUrl 为该 m3u8 的请求地址（相对路径解析基准）。
    */
   transformPlaylist?: (body: string, baseUrl: string) => string;
+  /**
+   * 分片代理请求失败自动降级源站直连成功时回调（参数为源站 origin）。
+   * 调用方可借此记忆"该源站可直连"，跳过后续代理改写（省一跳）。
+   */
+  onDirectFallbackOk?: (sourceOrigin: string) => void;
 }
+
+// 本站分片代理 URL（/api/proxy/segment?url=<encoded>）→ 还原源站直连 URL
+const unwrapSegmentProxy = (url: string): string | null => {
+  if (typeof window === 'undefined' || !url) return null;
+  try {
+    const u = new URL(url, window.location.origin);
+    if (u.pathname !== '/api/proxy/segment') return null;
+    return u.searchParams.get('url');
+  } catch {
+    return null;
+  }
+};
 
 export function createPrefetchLoaders(
   concurrency: number,
@@ -51,6 +68,7 @@ export function createPrefetchLoaders(
   options?: PrefetchLoaderOptions,
 ): PrefetchLoaderFactory {
   const transformPlaylist = options?.transformPlaylist;
+  const onDirectFallbackOk = options?.onDirectFallbackOk;
   // ---------- 共享状态 ----------
   const fragUrls: string[] = []; // 按播放顺序的分片 URL 列表
   const indexByUrl = new Map<string, number>();
@@ -128,14 +146,30 @@ export function createPrefetchLoaders(
     // 🔧 fetch 可取消：seek/abort 时释放连接，避免 stale 预取占满
     // 浏览器同域连接池导致新位置加载排队转圈（HTTP/1.1 源站仅 6 条连接）
     entry.controller = new AbortController();
-    entry.promise = fetch(url, {
-      method: 'GET',
-      credentials: 'omit',
-      signal: entry.controller.signal,
-    })
-      .then((res) => {
+    const doFetch = (target: string) =>
+      fetch(target, {
+        method: 'GET',
+        credentials: 'omit',
+        signal: entry.controller.signal,
+      }).then((res) => {
         if (!res.ok) throw new Error(`prefetch HTTP ${res.status}`);
         return res.arrayBuffer();
+      });
+    // 分片代理 URL：代理请求失败（如源站封服务器 IP 返回 403）时
+    // 自动降级源站直连重试一次——浏览器直连通常不受服务器侧封禁影响
+    const directUrl = unwrapSegmentProxy(url);
+    entry.promise = doFetch(url)
+      .catch((err: unknown) => {
+        if (entry.aborted || !directUrl) throw err;
+        return doFetch(directUrl).then((data) => {
+          // 直连成功：通知调用方记忆该源站可直连（跳过后续代理改写）
+          try {
+            onDirectFallbackOk?.(new URL(directUrl).origin);
+          } catch {
+            /* 回调异常不影响加载 */
+          }
+          return data;
+        });
       })
       .then((data) => {
         entry.status = 'ready';

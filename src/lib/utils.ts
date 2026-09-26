@@ -269,7 +269,10 @@ export interface VideoSourceTestResult {
 }
 
 // 视频播放代理配置（Cloudflare Worker 加速播放流，与 VideoProxyConfig 共用同一开关）
-function getVideoPlayProxyConfig(): { enabled: boolean; proxyUrl: string } {
+export function getVideoPlayProxyConfig(): {
+  enabled: boolean;
+  proxyUrl: string;
+} {
   if (typeof window === 'undefined') return { enabled: false, proxyUrl: '' };
   const rc = (window as any).RUNTIME_CONFIG;
   return {

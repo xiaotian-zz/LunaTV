@@ -29,6 +29,7 @@ import { SearchResult } from '@/lib/types';
 import {
   applyFirstPartyM3u8Proxy,
   applyVideoPlayProxy,
+  getVideoPlayProxyConfig,
   getVideoResolutionFromM3u8,
   isFirstPartyM3u8Proxy,
   markVideoPlayProxyUnavailable,
@@ -371,6 +372,8 @@ function PlayPageClient() {
     return true;
   });
   const blockAdEnabledRef = useRef(blockAdEnabled);
+  // 分片代理降级直连成功的源站 origin 集合（会话内记忆，跨换集/换源保留）
+  const directOkRef = useRef<Set<string>>(new Set());
 
   // 去广告开关（管理页面配置，默认开启）
   const adFilterEnabledRef = useRef(true);
@@ -5357,6 +5360,17 @@ function PlayPageClient() {
                         bufferConfig.prefetchConcurrency,
                         Hls.DefaultConfig.loader,
                         {
+                          // 分片代理失败降级直连成功时记忆源站 origin，
+                          // 后续 m3u8 改写跳过该源站（直接直连省一跳）
+                          onDirectFallbackOk: (sourceOrigin: string) => {
+                            if (!directOkRef.current.has(sourceOrigin)) {
+                              directOkRef.current.add(sourceOrigin);
+                              console.log(
+                                '🛟 分片代理失败已降级直连，后续跳过代理:',
+                                sourceOrigin,
+                              );
+                            }
+                          },
                           transformPlaylist: (
                             body: string,
                             baseUrl: string,
@@ -5370,13 +5384,15 @@ function PlayPageClient() {
                                 /* 过滤失败保留原始内容 */
                               }
                             }
-                            // 2) 分片 URL 统一改写为本站 segment 代理。
-                            //    m3u8 经 Worker 代理转发时只回传原始内容，
-                            //    分片仍是源站 URL，直连会被封源站的墙全部
-                            //    超时（10s+ 零字节）。统一走本站 /api/proxy/
-                            //    segment 由服务端转发，无论 m3u8 从哪层加载
-                            //    （直连/Worker/第一方代理）都稳定。
+                            // 2) 分片 URL 改写策略（受后台"播放源加速"开关控制）：
+                            //    开启 → 统一本站 segment 代理由服务端转发；
+                            //    失败时预取层自动降级源站直连（hls-prefetch-loader）
+                            //    关闭 → 分片保持源站 URL 浏览器直连
+                            //    已记忆可直连的源站 origin → 跳过改写（省一跳）
                             try {
+                              const { enabled: proxyEnabled } =
+                                getVideoPlayProxyConfig();
+                              if (!proxyEnabled) return out;
                               const origin = window.location.origin;
                               out = out
                                 .split('\n')
@@ -5386,6 +5402,13 @@ function PlayPageClient() {
                                   try {
                                     const abs = new URL(t, baseUrl).toString();
                                     if (abs.startsWith(origin)) return line;
+                                    if (
+                                      directOkRef.current.has(
+                                        new URL(abs).origin,
+                                      )
+                                    ) {
+                                      return line;
+                                    }
                                     return `${origin}/api/proxy/segment?url=${encodeURIComponent(abs)}`;
                                   } catch {
                                     return line;
