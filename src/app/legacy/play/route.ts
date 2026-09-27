@@ -140,7 +140,15 @@ function playScript(): string {
   function currentUrl() {
     var u = episodes[cur];
     if (!u) return '';
-    if (useProxy) return '/api/proxy/m3u8?url=' + encodeURIComponent(u);
+    // proto 显式指定协议：iOS 9 媒体栈子请求不带 Referer，
+    // 服务端据此把改写的分片/子清单 URL 保持为同协议（全链 https）
+    if (useProxy)
+      return (
+        '/api/proxy/m3u8?url=' +
+        encodeURIComponent(u) +
+        '&proto=' +
+        location.protocol.replace(':', '')
+      );
     return u;
   }
 

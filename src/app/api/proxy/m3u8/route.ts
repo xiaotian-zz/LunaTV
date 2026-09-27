@@ -514,14 +514,11 @@ function rewriteM3U8Content(
   allowCORS: boolean,
   sourceKey: string | null,
 ) {
-  // 协议判定：iOS 等设备的媒体加载栈（AVFoundation）发子请求不带 Referer，
-  // 按 Referer/X-Forwarded-Proto 推断协议都可能在反代场景退化为 http，导致
-  // https 页面的媒体管线加载 http 分片被阻止（黑屏）。
-  // 统一使用 scheme-relative URL（//host/...，RFC 3986 network-path
-  // reference），由加载方按自身协议解析，https/http 部署形态自动正确。
+  // 协议判定：iOS 9 媒体加载栈（AVFoundation）子请求不带 Referer 且不支持
+  // scheme-relative URL；Next 又会注入 x-forwarded-proto: http，两者均不可靠。
+  // 协议由第一跳显式指定（页面按 location.protocol 传 ?proto=）后全链透传，
+  // 未传时回退 Referer 推断，最后默认 http。
   const host = req.headers.get('host');
-  const proxyBase = `//${host}/api/proxy`;
-  const sourceParam = sourceKey ? `&moontv-source=${sourceKey}` : '';
 
   // 提取当前请求的referer参数，用于透传到variant URL
   const { searchParams } = new URL(req.url);
@@ -529,6 +526,25 @@ function rewriteM3U8Content(
   const refererParam = explicitReferer
     ? `&referer=${encodeURIComponent(explicitReferer)}`
     : '';
+
+  const explicitProto = searchParams.get('proto');
+  let protocol = 'http';
+  if (explicitProto === 'https' || explicitProto === 'http') {
+    protocol = explicitProto;
+  } else {
+    const referer = req.headers.get('referer');
+    if (referer) {
+      try {
+        protocol = new URL(referer).protocol.replace(':', '');
+      } catch {
+        // ignore
+      }
+    }
+  }
+  const proxyBase = `${protocol}://${host}/api/proxy`;
+  // proto 参数随 sourceParam 透传到所有改写出的下级 URL，保证全链协议一致
+  const sourceParam =
+    (sourceKey ? `&moontv-source=${sourceKey}` : '') + `&proto=${protocol}`;
 
   const lines = content.split('\n');
   const rewrittenLines: string[] = [];
