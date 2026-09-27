@@ -113,7 +113,10 @@ function playScript(): string {
   var tabBody = document.getElementById('tabbody');
   var episodes = [];
   var episodes_titles = [];
-  var useProxy = false;
+  // 默认直接走本站代理（对齐主站 iOS 17.1 以下无 MSE 设备策略）：
+  // iOS 9.3 直连源站会因混合内容/新根证书 TLS 失败，且 Safari 9 上
+  // video.onerror 对跨域/混合内容失败经常不触发，无法依赖降级链
+  var useProxy = true;
   var switching = false; // 自动降级重载期间忽略 onerror，避免误报最终失败
   var curDetail = null;  // 当前源详情（渲染概览信息）
   var favOn = false;
@@ -563,7 +566,7 @@ function playScript(): string {
           source = ns;
           id = nid;
           cur = 0;
-          useProxy = false;
+          useProxy = true; // 与初始策略一致，始终走本站代理
           switching = false;
           epsBox.innerHTML = '';
           lunaShow('pmsg', '', '');
@@ -605,18 +608,11 @@ function playScript(): string {
   window.addEventListener('pagehide', saveRecord);
   window.addEventListener('beforeunload', saveRecord);
 
-  // 直连失败自动降级：第一次错误 → 静默切代理重试；代理也失败 → 提示换源
+  // 默认已走代理；代理（同源）失败时 video.onerror 可靠触发 → 提示换源。
+  // 保留直连降级仅在极端场景手动使用（useProxy 已恒为 true，此分支不触达）
   video.onerror = function () {
     if (switching) return;
-    if (!useProxy) {
-      useProxy = true;
-      switching = true;
-      lunaShow('pmsg', '直连线路播放失败，已自动切换代理线路…', '');
-      play(cur);
-      setTimeout(function () { switching = false; }, 4000);
-    } else {
-      lunaShow('pmsg', '代理线路也无法播放，请在换源面板选择其他版本', 'err');
-    }
+    lunaShow('pmsg', '播放失败，请在换源面板选择其他版本', 'err');
   };
 
   document.getElementById('prevBtn').onclick = function () { play(cur - 1); };
