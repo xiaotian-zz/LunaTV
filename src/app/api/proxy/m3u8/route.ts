@@ -514,20 +514,13 @@ function rewriteM3U8Content(
   allowCORS: boolean,
   sourceKey: string | null,
 ) {
-  // 从 referer 头提取协议信息
-  const referer = req.headers.get('referer');
-  let protocol = 'http';
-  if (referer) {
-    try {
-      const refererUrl = new URL(referer);
-      protocol = refererUrl.protocol.replace(':', '');
-    } catch (error) {
-      // ignore
-    }
-  }
-
+  // 协议判定：iOS 等设备的媒体加载栈（AVFoundation）发子请求不带 Referer，
+  // 按 Referer/X-Forwarded-Proto 推断协议都可能在反代场景退化为 http，导致
+  // https 页面的媒体管线加载 http 分片被阻止（黑屏）。
+  // 统一使用 scheme-relative URL（//host/...，RFC 3986 network-path
+  // reference），由加载方按自身协议解析，https/http 部署形态自动正确。
   const host = req.headers.get('host');
-  const proxyBase = `${protocol}://${host}/api/proxy`;
+  const proxyBase = `//${host}/api/proxy`;
   const sourceParam = sourceKey ? `&moontv-source=${sourceKey}` : '';
 
   // 提取当前请求的referer参数，用于透传到variant URL
