@@ -593,6 +593,21 @@ export function renderLegacyPage(opts: LegacyPageOptions): string {
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>${escapeHtml(opts.title)} - ${site}</title>
+<script>
+/* iOS 9 及以下自动降级 http：AVFoundation 媒体栈不信任现代证书链
+   （ISRG/TrustAsia 根不在 iOS 9 信任库）且无"继续"入口，https 下视频必然黑屏。
+   整页切到 http（nginx 80 反代 /legacy 与 /api）即可绕开 TLS。
+   前提：服务器 80 端口放行 /legacy 与 /api、且已移除 HSTS 头，
+   否则浏览器会把 http 请求内部强制转回 https 造成循环。 */
+(function () {
+  try {
+    if (location.protocol !== 'https:') return;
+    var ua = navigator.userAgent;
+    if (!/iP(hone|ad|od)/.test(ua) || !/OS [1-9]_/.test(ua)) return;
+    location.replace(location.href.replace(/^https:/, 'http:'));
+  } catch (e) {}
+})();
+</script>
 <script>window.RUNTIME_CONFIG = ${rcJson};</script>
 <style>${LEGACY_CSS}</style>
 </head>
