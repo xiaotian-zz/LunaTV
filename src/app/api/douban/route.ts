@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server';
 
 import { getCacheTime } from '@/lib/config';
 import { fetchDoubanData } from '@/lib/douban';
+import { recordRequest } from '@/lib/performance-monitor';
 import { DoubanItem, DoubanResult } from '@/lib/types';
 import { getRandomUserAgent } from '@/lib/user-agent';
-import { recordRequest } from '@/lib/performance-monitor';
 
 interface DoubanApiResponse {
   subjects: Array<{
@@ -146,16 +146,27 @@ export async function GET(request: Request) {
     });
 
     const cacheTime = await getCacheTime();
+    // 空结果不缓存：豆瓣偶发返回空列表时，避免浏览器/CDN 把空数据缓存住（iOS 上会显示暂无内容 2 小时）
+    const hasData = list.length > 0;
     return NextResponse.json(response, {
       headers: {
-        'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-        'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-        'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
+        'Cache-Control': hasData
+          ? `public, max-age=${cacheTime}, s-maxage=${cacheTime}`
+          : 'no-store',
+        'CDN-Cache-Control': hasData
+          ? `public, s-maxage=${cacheTime}`
+          : 'no-store',
+        'Vercel-CDN-Cache-Control': hasData
+          ? `public, s-maxage=${cacheTime}`
+          : 'no-store',
         'Netlify-Vary': 'query',
       },
     });
   } catch (error) {
-    const errorResponse = { error: '获取豆瓣数据失败', details: (error as Error).message };
+    const errorResponse = {
+      error: '获取豆瓣数据失败',
+      details: (error as Error).message,
+    };
     const errorSize = Buffer.byteLength(JSON.stringify(errorResponse), 'utf8');
 
     recordRequest({
@@ -233,11 +244,19 @@ function handleTop250(pageStart: number) {
       };
 
       const cacheTime = await getCacheTime();
+      // 空结果不缓存，原因同上
+      const hasData = movies.length > 0;
       return NextResponse.json(apiResponse, {
         headers: {
-          'Cache-Control': `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
-          'CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
-          'Vercel-CDN-Cache-Control': `public, s-maxage=${cacheTime}`,
+          'Cache-Control': hasData
+            ? `public, max-age=${cacheTime}, s-maxage=${cacheTime}`
+            : 'no-store',
+          'CDN-Cache-Control': hasData
+            ? `public, s-maxage=${cacheTime}`
+            : 'no-store',
+          'Vercel-CDN-Cache-Control': hasData
+            ? `public, s-maxage=${cacheTime}`
+            : 'no-store',
           'Netlify-Vary': 'query',
         },
       });
@@ -249,7 +268,7 @@ function handleTop250(pageStart: number) {
           error: '获取豆瓣 Top250 数据失败',
           details: (error as Error).message,
         },
-        { status: 500 }
+        { status: 500 },
       );
     });
 }

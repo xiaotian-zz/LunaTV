@@ -2530,6 +2530,21 @@ function PlayPageClient() {
       // ☁️ Emby 源需要自定义鉴权头，不走 Cloudflare Worker 代理；其余源套一层加速
       if (!isEmbySource) {
         newUrl = applyVideoPlayProxy(newUrl);
+
+        // 🛡️ 无 MSE 设备（iPhone iOS<17.1 等）由 Safari 原生 HLS 直接播放，
+        // 客户端 hls.js 的去广告 loader 不会执行 → 统一改走本站 m3u8 代理，
+        // 由服务端过滤广告；Worker 加速对原生路径无过滤能力，直接跳过
+        if (
+          newUrl &&
+          /^https?:\/\//i.test(newUrl) &&
+          /\.m3u8(\?|#|$)/i.test(newUrl) &&
+          typeof window !== 'undefined' &&
+          typeof window.MediaSource === 'undefined' &&
+          typeof (window as any).ManagedMediaSource === 'undefined'
+        ) {
+          newUrl = `/api/proxy/m3u8?url=${encodeURIComponent(newUrl)}`;
+          console.log('🛡️ 无MSE设备：m3u8 走本站代理（服务端去广告）');
+        }
       }
 
       if (newUrl !== videoUrl) {
@@ -5221,18 +5236,13 @@ function PlayPageClient() {
               // 在函数内部重新检测iOS13+设备
               const localIsIOS13 = isIOS13;
 
-              // 以 iOS/iPadOS 17 为界分级：17+ 跟随后台缓冲设置（标准/增强/强力 = 1x/2x/3x），
-              // 17 以下沿用保守配置。
-              // ⚠️ 不能用 UA 版本号判定：iOS 26.x 的 Safari UA 把版本伪装
-              // 成 18_x（实测 iPhone OS 26.1 → "iPhone OS 18_7 like Mac OS X"），
-              // 按 UA 判会把 26 误判为旧设备锁死 15s 保命缓冲。
-              // 改用特性检测：ManagedMediaSource 是 iOS/iPadOS 17.1+ 才有的
-              // API——能在这里跑 hls.js 的苹果设备必然有 MMS（无 MMS 的旧
-              // 设备走原生 HLS 根本到不了这段配置），有 MMS 即放行三档。
-              const localConservativeCaps =
-                localIsIOS13 &&
-                typeof (window as any).ManagedMediaSource === 'undefined' &&
-                typeof (window as any).MediaSource === 'undefined';
+              // 所有苹果设备统一跟随后台缓冲设置（标准/增强/强力 = 1x/2x/3x），
+              // 不再按新旧分级：无 MSE 的旧 iPhone 走原生 HLS 根本到不了这段
+              // 配置，能跑到这里的苹果设备都有 MSE，直接放行三档。
+              // （历史教训：曾按 UA/特性检测把“旧苹果设备”锁死 15s/30MB 保命
+              // 档，但 iOS 26.x 的 Safari UA 把版本伪装成 18_x——实测
+              // iPhone OS 26.1 → "iPhone OS 18_7 like Mac OS X"——导致新设备
+              // 反被误判锁死。）
 
               // 获取用户的缓冲模式配置
               const bufferConfig = getHlsBufferConfig();
@@ -5261,62 +5271,42 @@ function PlayPageClient() {
                   // 点播场景下会导致：缓冲区过小、网络波动时容易卡顿、CPU 负担增加
                   lowLatencyMode: false,
 
-                  // 🎯 官方推荐的缓冲策略 - 旧苹果设备保守 / iPadOS 17+ 新 iPad 与桌面一致
+                  // 🎯 官方推荐的缓冲策略 - 苹果设备与桌面一致 / Android 设安全上限
                   /* 缓冲长度配置 - 移动端应用用户配置但设安全上限（MSE 内存约束） */
                   maxBufferLength: isMobile
-                    ? localConservativeCaps
-                      ? Math.min(bufferConfig.maxBufferLength, 15) // 旧苹果设备保命上限
-                      : localIsIOS13
-                        ? bufferConfig.maxBufferLength // iOS/iPadOS 17+：与桌面一致
-                        : Math.min(bufferConfig.maxBufferLength, 25) // Android
+                    ? localIsIOS13
+                      ? bufferConfig.maxBufferLength // 苹果设备：跟随后台三档
+                      : Math.min(bufferConfig.maxBufferLength, 25) // Android
                     : bufferConfig.maxBufferLength, // 桌面直接使用用户配置
                   backBufferLength: isMobile
-                    ? localConservativeCaps
-                      ? Math.min(bufferConfig.backBufferLength, 10)
-                      : localIsIOS13
-                        ? bufferConfig.backBufferLength
-                        : Math.min(bufferConfig.backBufferLength, 20)
+                    ? localIsIOS13
+                      ? bufferConfig.backBufferLength
+                      : Math.min(bufferConfig.backBufferLength, 20) // Android
                     : bufferConfig.backBufferLength, // 桌面直接使用用户配置
 
                   /* 缓冲大小配置 - 移动端同样应用用户配置（带上限） */
                   maxBufferSize: isMobile
-                    ? localConservativeCaps
-                      ? Math.min(bufferConfig.maxBufferSize, 30 * 1000 * 1000)
-                      : localIsIOS13
-                        ? bufferConfig.maxBufferSize
-                        : Math.min(bufferConfig.maxBufferSize, 60 * 1000 * 1000) // Android
+                    ? localIsIOS13
+                      ? bufferConfig.maxBufferSize
+                      : Math.min(bufferConfig.maxBufferSize, 60 * 1000 * 1000) // Android
                     : bufferConfig.maxBufferSize, // 桌面直接使用用户配置
 
                   /* 网络加载优化 - 参考 defaultLoadPolicy */
-                  maxLoadingDelay: isMobile
-                    ? localConservativeCaps
-                      ? 2
-                      : 3
-                    : 4, // 旧设备更快超时
-                  maxBufferHole: isMobile
-                    ? localConservativeCaps
-                      ? 0.05
-                      : 0.1
-                    : 0.1, // 减少缓冲洞容忍度
+                  maxLoadingDelay: isMobile ? 3 : 4,
+                  maxBufferHole: 0.1,
 
                   /* Fragment管理 - 参考官方配置 */
                   liveDurationInfinity: false, // 避免无限缓冲 (官方默认false)
-                  liveBackBufferLength: isMobile
-                    ? localConservativeCaps
-                      ? 3
-                      : 5
-                    : null, // 已废弃，保持兼容
+                  liveBackBufferLength: isMobile ? 5 : null, // 已废弃，保持兼容
 
                   // v1.7.0 新增：appendBuffer 卡死超时兜底，避免个别设备 SourceBuffer 无响应导致播放静默卡住不报错
                   appendTimeout: isMobile ? 8000 : 10000,
 
                   /* 高级优化配置 - 参考 StreamControllerConfig */
                   maxMaxBufferLength: isMobile
-                    ? localConservativeCaps
-                      ? 60
-                      : localIsIOS13
-                        ? 600
-                        : 120
+                    ? localIsIOS13
+                      ? 600
+                      : 120
                     : 600, // 最大缓冲长度限制
                   maxFragLookUpTolerance: isMobile ? 0.1 : 0.25, // 片段查找容忍度
 
@@ -5328,7 +5318,7 @@ function PlayPageClient() {
 
                   /* 启动优化 */
                   startFragPrefetch: true, // 全平台开启起播预取（点击播放即预取首分片）
-                  testBandwidth: !localConservativeCaps, // 旧设备关闭带宽测试以快速启动
+                  testBandwidth: true, // 起播带宽测试，避免 ABR 选错低码率档
 
                   /* Loader配置 - 参考官方 fragLoadPolicy */
                   fragLoadPolicy: {

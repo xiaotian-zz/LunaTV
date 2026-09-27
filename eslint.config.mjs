@@ -3,6 +3,7 @@ import prettier from 'eslint-config-prettier';
 import nextCoreWebVitals from 'eslint-config-next/core-web-vitals';
 import simpleImportSort from 'eslint-plugin-simple-import-sort';
 import unusedImports from 'eslint-plugin-unused-imports';
+import { parser as tsEslintParser } from 'typescript-eslint';
 
 export default [
   {
@@ -15,6 +16,21 @@ export default [
   },
   ...nextCoreWebVitals,
   prettier,
+  {
+    // eslint-plugin-react 7.37.5 在 ESLint 10 下 version:'detect' 会崩溃（context.getFilename 已移除），
+    // 固定 React 版本绕过检测路径
+    settings: {
+      react: { version: '19.3.0' },
+    },
+  },
+  {
+    // eslint-config-next 对 js 文件用 @babel/eslint-parser，其 eslint-scope 5 内部版
+    // 与 ESLint 10 不兼容（缺 scopeManager.addGlobals）；js 文件改用 typescript-eslint parser
+    files: ['**/*.js'],
+    languageOptions: {
+      parser: tsEslintParser,
+    },
+  },
   {
     files: ['**/*.{js,jsx,ts,tsx}'],
     plugins: {

@@ -1,11 +1,11 @@
-/* eslint-disable no-console,@typescript-eslint/no-explicit-any */
+/* eslint-disable no-console */
 
-import { NextResponse } from "next/server";
+import { NextResponse } from 'next/server';
 
-import { getConfig } from "@/lib/config";
-import { getBaseUrl, resolveUrl } from "@/lib/live";
-import { readTextLimited } from "@/lib/proxy-security";
-import { DEFAULT_USER_AGENT } from "@/lib/user-agent";
+import { getConfig } from '@/lib/config';
+import { getBaseUrl, resolveUrl } from '@/lib/live';
+import { readTextLimited } from '@/lib/proxy-security';
+import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 // m3u8 manifest 响应体大小硬上限，防止异常上游返回超大响应把内存打爆
 const MAX_M3U8_BYTES = 5 * 1024 * 1024; // 5MB
@@ -13,8 +13,8 @@ const MAX_M3U8_BYTES = 5 * 1024 * 1024; // 5MB
 export const runtime = 'nodejs';
 
 // 连接池管理
-import * as https from 'https';
 import * as http from 'http';
+import * as https from 'https';
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
@@ -48,7 +48,7 @@ export async function GET(request: Request) {
   const url = searchParams.get('url');
   const allowCORS = searchParams.get('allowCORS') === 'true';
   const source = searchParams.get('moontv-source');
-  
+
   if (!url) {
     stats.errors++;
     return NextResponse.json({ error: 'Missing url' }, { status: 400 });
@@ -82,12 +82,13 @@ export async function GET(request: Request) {
     // 参考 hls.js fetch-loader，构建标准headers
     const headers: Record<string, string> = {
       'User-Agent': ua,
-      'Accept': 'application/vnd.apple.mpegurl, application/x-mpegurl, application/octet-stream, */*',
+      Accept:
+        'application/vnd.apple.mpegurl, application/x-mpegurl, application/octet-stream, */*',
       'Accept-Encoding': 'identity', // 避免gzip压缩导致的处理复杂性
       'Accept-Language': 'en-US,en;q=0.9',
       'Cache-Control': 'no-cache',
-      'Pragma': 'no-cache',
-      'Connection': 'keep-alive'
+      Pragma: 'no-cache',
+      Connection: 'keep-alive',
     };
 
     // 转发 Referer/Origin 到上游（解决某些源站的403白名单校验）
@@ -117,7 +118,7 @@ export async function GET(request: Request) {
       credentials: 'same-origin',
       signal: controller.signal,
       headers: new Headers(headers),
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+
       // @ts-ignore - Node.js specific option
       agent: typeof window === 'undefined' ? agent : undefined,
     });
@@ -128,35 +129,50 @@ export async function GET(request: Request) {
     if (!response.ok) {
       stats.errors++;
       clearTimeout(timeoutId);
-      
+
       // 直接返回原始的HTTP错误，让hls.js处理
       // 不返回JSON，因为hls.js期望的是M3U8内容或标准HTTP错误
       return new NextResponse(
-        `HTTP Error ${response.status}: ${response.statusText}`, 
-        { 
+        `HTTP Error ${response.status}: ${response.statusText}`,
+        {
           status: response.status,
           statusText: response.statusText,
           headers: {
             'Content-Type': 'text/plain',
             'Access-Control-Allow-Origin': '*',
-          }
-        }
+          },
+        },
       );
     }
 
     const contentType = response.headers.get('Content-Type') || '';
-    const contentLength = parseInt(response.headers.get('Content-Length') || '0', 10);
-    
+    const contentLength = parseInt(
+      response.headers.get('Content-Length') || '0',
+      10,
+    );
+
     // 检查内容是否为 M3U8
-    const isM3U8 = contentType.toLowerCase().includes('mpegurl') || 
-                   contentType.toLowerCase().includes('octet-stream') ||
-                   decodedUrl.includes('.m3u8');
+    const isM3U8 =
+      contentType.toLowerCase().includes('mpegurl') ||
+      contentType.toLowerCase().includes('octet-stream') ||
+      decodedUrl.includes('.m3u8');
 
     if (isM3U8) {
       // 获取最终的响应URL（处理重定向后的URL）
       const finalUrl = response.url;
-      const m3u8Content = await readTextLimited(response, MAX_M3U8_BYTES);
       responseUsed = true;
+
+      // 使用最终的响应URL作为baseUrl，而不是原始的请求URL
+      const baseUrl = getBaseUrl(finalUrl);
+
+      // 🛡️ 服务端去广告：iPhone iOS<17 等无 MSE 设备走原生 HLS，
+      // 客户端 hls.js loader 的过滤不会执行，必须在服务端过滤
+      let m3u8Content = await readTextLimited(response, MAX_M3U8_BYTES);
+      const adFilterEnabled =
+        config.SiteConfig?.CustomAdFilterEnabled !== false;
+      if (adFilterEnabled) {
+        m3u8Content = applyServerAdFilter(m3u8Content, source, config);
+      }
 
       // 更新统计信息
       if (contentLength > 0) {
@@ -165,42 +181,72 @@ export async function GET(request: Request) {
         stats.totalBytes += m3u8Content.length;
       }
 
-      // 使用最终的响应URL作为baseUrl，而不是原始的请求URL
-      const baseUrl = getBaseUrl(finalUrl);
-
       // 重写 M3U8 内容
-      const modifiedContent = rewriteM3U8Content(m3u8Content, baseUrl, request, allowCORS, source);
+      const modifiedContent = rewriteM3U8Content(
+        m3u8Content,
+        baseUrl,
+        request,
+        allowCORS,
+        source,
+      );
 
       const headers = new Headers();
-      headers.set('Content-Type', contentType || 'application/vnd.apple.mpegurl');
+      headers.set(
+        'Content-Type',
+        contentType || 'application/vnd.apple.mpegurl',
+      );
       headers.set('Access-Control-Allow-Origin', '*');
       headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
-      headers.set('Access-Control-Allow-Headers', 'Content-Type, Range, Origin, Accept, User-Agent');
+      headers.set(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Range, Origin, Accept, User-Agent',
+      );
       headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
       headers.set('Pragma', 'no-cache');
       headers.set('Expires', '0');
-      headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type');
+      headers.set(
+        'Access-Control-Expose-Headers',
+        'Content-Length, Content-Range, Content-Type',
+      );
       headers.set('Content-Length', modifiedContent.length.toString());
 
       // 更新性能统计
       const responseTime = Date.now() - startTime;
-      stats.avgResponseTime = (stats.avgResponseTime * (stats.requests - 1) + responseTime) / stats.requests;
+      stats.avgResponseTime =
+        (stats.avgResponseTime * (stats.requests - 1) + responseTime) /
+        stats.requests;
 
       return new Response(modifiedContent, { headers, status: 200 });
     }
 
     // 直接代理非M3U8内容
     const responseHeaders = new Headers();
-    responseHeaders.set('Content-Type', response.headers.get('Content-Type') || 'application/vnd.apple.mpegurl');
+    responseHeaders.set(
+      'Content-Type',
+      response.headers.get('Content-Type') || 'application/vnd.apple.mpegurl',
+    );
     responseHeaders.set('Access-Control-Allow-Origin', '*');
-    responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
-    responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, Range, Origin, Accept, User-Agent');
+    responseHeaders.set(
+      'Access-Control-Allow-Methods',
+      'GET, POST, OPTIONS, HEAD',
+    );
+    responseHeaders.set(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Range, Origin, Accept, User-Agent',
+    );
     responseHeaders.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-    responseHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Content-Type');
+    responseHeaders.set(
+      'Access-Control-Expose-Headers',
+      'Content-Length, Content-Range, Content-Type',
+    );
 
     // 复制原始响应的相关头部
-    const originalHeaders = ['Content-Length', 'Content-Range', 'Accept-Ranges'];
-    originalHeaders.forEach(header => {
+    const originalHeaders = [
+      'Content-Length',
+      'Content-Range',
+      'Accept-Ranges',
+    ];
+    originalHeaders.forEach((header) => {
       const value = response?.headers.get(header);
       if (value) {
         responseHeaders.set(header, value);
@@ -213,37 +259,44 @@ export async function GET(request: Request) {
     }
 
     const responseTime = Date.now() - startTime;
-    stats.avgResponseTime = (stats.avgResponseTime * (stats.requests - 1) + responseTime) / stats.requests;
+    stats.avgResponseTime =
+      (stats.avgResponseTime * (stats.requests - 1) + responseTime) /
+      stats.requests;
 
     return new Response(response?.body, {
       status: 200,
       headers: responseHeaders,
     });
-
   } catch (error: any) {
     stats.errors++;
     clearTimeout(timeoutId);
-    
+
     // 处理不同类型的错误
     if (error.name === 'AbortError') {
       return NextResponse.json({ error: 'Request timeout' }, { status: 408 });
     }
-    
+
     if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-      return NextResponse.json({ error: 'Network connection failed' }, { status: 503 });
+      return NextResponse.json(
+        { error: 'Network connection failed' },
+        { status: 503 },
+      );
     }
 
     if (process.env.NODE_ENV === 'development') {
       console.error('M3U8 proxy error:', error);
     }
-    return NextResponse.json({ 
-      error: 'Failed to fetch m3u8',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    }, { status: 500 });
-
+    return NextResponse.json(
+      {
+        error: 'Failed to fetch m3u8',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      },
+      { status: 500 },
+    );
   } finally {
     clearTimeout(timeoutId);
-    
+
     // 确保 response 被正确关闭以释放资源
     if (response && !responseUsed) {
       try {
@@ -257,12 +310,210 @@ export async function GET(request: Request) {
 
     // 定期打印统计信息
     if (stats.requests % 100 === 0 && process.env.NODE_ENV === 'development') {
-      console.log(`M3U8 Proxy Stats - Requests: ${stats.requests}, Errors: ${stats.errors}, Avg Response Time: ${stats.avgResponseTime.toFixed(2)}ms, Total Bytes: ${(stats.totalBytes / 1024 / 1024).toFixed(2)}MB`);
+      console.log(
+        `M3U8 Proxy Stats - Requests: ${stats.requests}, Errors: ${stats.errors}, Avg Response Time: ${stats.avgResponseTime.toFixed(2)}ms, Total Bytes: ${(stats.totalBytes / 1024 / 1024).toFixed(2)}MB`,
+      );
     }
   }
 }
 
-function rewriteM3U8Content(content: string, baseUrl: string, req: Request, allowCORS: boolean, sourceKey: string | null) {
+/**
+ * 🛡️ 服务端去广告（与客户端 play/page.tsx filterAdsFromM3U8 同一套规则）：
+ * 1. 管理端自定义去广告代码优先（new Function 执行，失败降级内置规则）
+ * 2. 内置规则：URL 关键字 + DISCONTINUITY 结构特征（碎分片/短插播/片尾贴片）
+ * 仅作用于媒体播放列表（含 EXTINF）；master playlist 无 EXTINF 时原样返回。
+ */
+function applyServerAdFilter(
+  m3u8Content: string,
+  source: string | null,
+  config: Awaited<ReturnType<typeof getConfig>>,
+): string {
+  if (!m3u8Content) return m3u8Content;
+
+  // 管理端自定义去广告代码优先
+  const customCode = config.SiteConfig?.CustomAdFilterCode;
+  if (customCode && customCode.trim()) {
+    try {
+      // 与客户端一致：移除 TypeScript 类型注解后执行
+      const jsCode = customCode
+        .replace(
+          /(\w+)\s*:\s*(string|number|boolean|any|void|never|unknown|object)\s*([,)])/g,
+          '$1$3',
+        )
+        .replace(
+          /\)\s*:\s*(string|number|boolean|any|void|never|unknown|object)\s*\{/g,
+          ') {',
+        )
+        .replace(
+          /(const|let|var)\s+(\w+)\s*:\s*(string|number|boolean|any|void|never|unknown|object)\s*=/g,
+          '$1 $2 =',
+        );
+      const customFunction = new Function(
+        'type',
+        'm3u8Content',
+        jsCode + '\nreturn filterAdsFromM3U8(type, m3u8Content);',
+      );
+      const result = customFunction(source || '', m3u8Content);
+      if (typeof result === 'string' && result) {
+        return result;
+      }
+    } catch {
+      // 自定义代码执行失败，降级内置规则
+    }
+  }
+  return builtinAdFilter(m3u8Content);
+}
+
+function builtinAdFilter(m3u8Content: string): string {
+  // 广告关键字（与客户端内置列表一致）
+  const adKeywords = [
+    'sponsor',
+    '/ad/',
+    '/ads/',
+    'advert',
+    'advertisement',
+    '/adjump',
+    'redtraffic',
+  ];
+  const isAdUrl = (u: string) => {
+    const lower = u.toLowerCase();
+    return adKeywords.some((k) => lower.includes(k));
+  };
+
+  // ---------- 结构化解析（同客户端） ----------
+  interface Frag {
+    disc: boolean;
+    dur: number;
+    tagLines: string[];
+    url: string;
+  }
+  const headLines: string[] = [];
+  const tailLines: string[] = [];
+  const frags: Frag[] = [];
+  let phase: 'head' | 'body' | 'tail' = 'head';
+  let curDisc = false;
+  let curDur = 0;
+  let curTags: string[] = [];
+
+  for (const raw of m3u8Content.split('\n')) {
+    const line = raw.trimEnd();
+    const t = line.trim();
+    if (phase === 'head') {
+      if (!t) continue;
+      if (t.startsWith('#EXT-X-DISCONTINUITY')) {
+        curDisc = true;
+        continue;
+      }
+      if (t.startsWith('#EXTINF:')) {
+        curDur = parseFloat(t.slice(8)) || 0;
+        curTags = [line];
+        phase = 'body';
+        continue;
+      }
+      headLines.push(line);
+      continue;
+    }
+    if (phase === 'tail') {
+      tailLines.push(line);
+      continue;
+    }
+    // body
+    if (!t) continue;
+    if (t.startsWith('#EXT-X-ENDLIST')) {
+      tailLines.push(line);
+      phase = 'tail';
+      continue;
+    }
+    if (t.startsWith('#EXT-X-DISCONTINUITY')) {
+      curDisc = true;
+      continue;
+    }
+    if (t.startsWith('#EXTINF:')) {
+      curDur = parseFloat(t.slice(8)) || 0;
+      curTags = [line];
+      continue;
+    }
+    if (t.startsWith('#')) {
+      curTags.push(line);
+      continue;
+    }
+    frags.push({ disc: curDisc, dur: curDur, tagLines: curTags, url: line });
+    curDisc = false;
+    curDur = 0;
+    curTags = [];
+  }
+
+  // 无分片（master playlist 或非媒体列表）→ 原样返回
+  if (!frags.length) return m3u8Content;
+
+  // ---------- 标记待删除分片 ----------
+  const drop: boolean[] = new Array(frags.length).fill(false);
+
+  frags.forEach((f, i) => {
+    if (isAdUrl(f.url)) drop[i] = true;
+  });
+
+  for (let i = 0; i < frags.length; i += 1) {
+    if (!frags[i].disc) continue;
+    let total = 0;
+    let hasTiny = false;
+    let count = 0;
+    let j = i;
+    while (j < frags.length) {
+      if (j > i && frags[j].disc) break;
+      total += frags[j].dur;
+      count += 1;
+      if (frags[j].dur > 0 && frags[j].dur < 1) hasTiny = true;
+      j += 1;
+    }
+    const enclosed = j < frags.length && frags[j].disc;
+    const isAdSegment =
+      total > 0 &&
+      ((enclosed && total <= 90 && hasTiny) || (total <= 30 && count <= 8));
+    if (isAdSegment) {
+      for (let k = i; k < j; k += 1) drop[k] = true;
+    }
+  }
+
+  // ---------- 输出：DISCONTINUITY 保留 + 广告删除点补插 ----------
+  const out: string[] = [...headLines];
+  let needDisc = false;
+  let lastOutDisc = false;
+  for (let i = 0; i < frags.length; i += 1) {
+    const f = frags[i];
+    if (drop[i]) {
+      needDisc = true;
+      continue;
+    }
+    if (f.disc) {
+      if (!lastOutDisc) {
+        out.push('#EXT-X-DISCONTINUITY');
+        lastOutDisc = true;
+      }
+      needDisc = false;
+    } else if (needDisc) {
+      if (!lastOutDisc) {
+        out.push('#EXT-X-DISCONTINUITY');
+        lastOutDisc = true;
+      }
+      needDisc = false;
+    }
+    out.push(...f.tagLines);
+    out.push(f.url);
+    lastOutDisc = false;
+  }
+  out.push(...tailLines);
+
+  return out.join('\n');
+}
+
+function rewriteM3U8Content(
+  content: string,
+  baseUrl: string,
+  req: Request,
+  allowCORS: boolean,
+  sourceKey: string | null,
+) {
   // 从 referer 头提取协议信息
   const referer = req.headers.get('referer');
   let protocol = 'http';
@@ -282,7 +533,9 @@ function rewriteM3U8Content(content: string, baseUrl: string, req: Request, allo
   // 提取当前请求的referer参数，用于透传到variant URL
   const { searchParams } = new URL(req.url);
   const explicitReferer = searchParams.get('referer');
-  const refererParam = explicitReferer ? `&referer=${encodeURIComponent(explicitReferer)}` : '';
+  const refererParam = explicitReferer
+    ? `&referer=${encodeURIComponent(explicitReferer)}`
+    : '';
 
   const lines = content.split('\n');
   const rewrittenLines: string[] = [];
@@ -294,7 +547,9 @@ function rewriteM3U8Content(content: string, baseUrl: string, req: Request, allo
     // 处理 TS 片段 URL 和其他媒体文件
     if (line && !line.startsWith('#')) {
       const resolvedUrl = resolveUrl(baseUrl, line);
-      const proxyUrl = allowCORS ? resolvedUrl : `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`;
+      const proxyUrl = allowCORS
+        ? resolvedUrl
+        : `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`;
       rewrittenLines.push(proxyUrl);
       continue;
     }
@@ -326,17 +581,35 @@ function rewriteM3U8Content(content: string, baseUrl: string, req: Request, allo
 
     // 处理内容导向 (EXT-X-CONTENT-STEERING)
     if (line.startsWith('#EXT-X-CONTENT-STEERING:')) {
-      line = rewriteContentSteeringUri(line, baseUrl, proxyBase, variables, sourceParam);
+      line = rewriteContentSteeringUri(
+        line,
+        baseUrl,
+        proxyBase,
+        variables,
+        sourceParam,
+      );
     }
 
     // 处理会话数据 (EXT-X-SESSION-DATA) - 可能包含 URI
     if (line.startsWith('#EXT-X-SESSION-DATA:')) {
-      line = rewriteSessionDataUri(line, baseUrl, proxyBase, variables, sourceParam);
+      line = rewriteSessionDataUri(
+        line,
+        baseUrl,
+        proxyBase,
+        variables,
+        sourceParam,
+      );
     }
 
     // 处理会话密钥 (EXT-X-SESSION-KEY)
     if (line.startsWith('#EXT-X-SESSION-KEY:')) {
-      line = rewriteSessionKeyUri(line, baseUrl, proxyBase, variables, sourceParam);
+      line = rewriteSessionKeyUri(
+        line,
+        baseUrl,
+        proxyBase,
+        variables,
+        sourceParam,
+      );
     }
 
     // 处理嵌套的 M3U8 文件 (EXT-X-STREAM-INF)
@@ -361,22 +634,46 @@ function rewriteM3U8Content(content: string, baseUrl: string, req: Request, allo
 
     // 处理日期范围标签中的 URI (EXT-X-DATERANGE)
     if (line.startsWith('#EXT-X-DATERANGE:')) {
-      line = rewriteDateRangeUri(line, baseUrl, proxyBase, variables, sourceParam);
+      line = rewriteDateRangeUri(
+        line,
+        baseUrl,
+        proxyBase,
+        variables,
+        sourceParam,
+      );
     }
 
     // 处理预加载提示 (EXT-X-PRELOAD-HINT)
     if (line.startsWith('#EXT-X-PRELOAD-HINT:')) {
-      line = rewritePreloadHintUri(line, baseUrl, proxyBase, variables, sourceParam);
+      line = rewritePreloadHintUri(
+        line,
+        baseUrl,
+        proxyBase,
+        variables,
+        sourceParam,
+      );
     }
 
     // 处理渲染报告 (EXT-X-RENDITION-REPORT)
     if (line.startsWith('#EXT-X-RENDITION-REPORT:')) {
-      line = rewriteRenditionReportUri(line, baseUrl, proxyBase, variables, sourceParam);
+      line = rewriteRenditionReportUri(
+        line,
+        baseUrl,
+        proxyBase,
+        variables,
+        sourceParam,
+      );
     }
 
     // 处理服务器控制 (EXT-X-SERVER-CONTROL)
     if (line.startsWith('#EXT-X-SERVER-CONTROL:')) {
-      line = rewriteServerControlUri(line, baseUrl, proxyBase, variables, sourceParam);
+      line = rewriteServerControlUri(
+        line,
+        baseUrl,
+        proxyBase,
+        variables,
+        sourceParam,
+      );
     }
 
     // 处理跳过片段 (EXT-X-SKIP)
@@ -393,36 +690,51 @@ function rewriteM3U8Content(content: string, baseUrl: string, req: Request, allo
 // 变量替换函数 - 参考 hls.js 标准实现
 const VARIABLE_REPLACEMENT_REGEX = /\{\$([a-zA-Z0-9-_]+)\}/g;
 
-function substituteVariables(text: string, variables: Map<string, string>): string {
+function substituteVariables(
+  text: string,
+  variables: Map<string, string>,
+): string {
   if (variables.size === 0) {
     return text;
   }
-  
-  return text.replace(VARIABLE_REPLACEMENT_REGEX, (variableReference: string, variableName: string) => {
-    const variableValue = variables.get(variableName);
-    if (variableValue === undefined) {
-      if (process.env.NODE_ENV === 'development') {
-        console.warn(`Missing variable definition for: "${variableName}"`);
+
+  return text.replace(
+    VARIABLE_REPLACEMENT_REGEX,
+    (variableReference: string, variableName: string) => {
+      const variableValue = variables.get(variableName);
+      if (variableValue === undefined) {
+        if (process.env.NODE_ENV === 'development') {
+          console.warn(`Missing variable definition for: "${variableName}"`);
+        }
+        return variableReference; // 保持原始引用如果变量未定义
       }
-      return variableReference; // 保持原始引用如果变量未定义
-    }
-    return variableValue;
-  });
+      return variableValue;
+    },
+  );
 }
 
 // 处理变量定义
-function processDefineVariables(line: string, variables: Map<string, string>): string {
+function processDefineVariables(
+  line: string,
+  variables: Map<string, string>,
+): string {
   const nameMatch = line.match(/NAME="([^"]+)"/);
   const valueMatch = line.match(/VALUE="([^"]+)"/);
-  
+
   if (nameMatch && valueMatch) {
     variables.set(nameMatch[1], valueMatch[1]);
   }
-  
+
   return line; // 返回原始标签，让客户端处理
 }
 
-function rewriteMapUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = '') {
+function rewriteMapUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+) {
   const uriMatch = line.match(/URI="([^"]+)"/);
   if (uriMatch) {
     let originalUri = uriMatch[1];
@@ -436,7 +748,13 @@ function rewriteMapUri(line: string, baseUrl: string, proxyBase: string, variabl
   return line;
 }
 
-function rewriteKeyUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = '') {
+function rewriteKeyUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+) {
   const uriMatch = line.match(/URI="([^"]+)"/);
   if (uriMatch) {
     let originalUri = uriMatch[1];
@@ -450,11 +768,17 @@ function rewriteKeyUri(line: string, baseUrl: string, proxyBase: string, variabl
   return line;
 }
 
-function rewriteMediaUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = '') {
+function rewriteMediaUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+) {
   const uriMatch = line.match(/URI="([^"]+)"/);
   if (uriMatch) {
     let originalUri = uriMatch[1];
-    
+
     // 检查URI是否有效，避免nan值
     if (!originalUri || originalUri === 'nan' || originalUri.includes('nan')) {
       if (process.env.NODE_ENV === 'development') {
@@ -463,11 +787,11 @@ function rewriteMediaUri(line: string, baseUrl: string, proxyBase: string, varia
       // 移除URI属性，让HLS.js忽略这个音频轨道
       return line.replace(/,?URI="[^"]*"/, '');
     }
-    
+
     if (variables) {
       originalUri = substituteVariables(originalUri, variables);
     }
-    
+
     try {
       const resolvedUrl = resolveUrl(baseUrl, originalUri);
       const proxyUrl = `${proxyBase}/m3u8?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`;
@@ -484,7 +808,13 @@ function rewriteMediaUri(line: string, baseUrl: string, proxyBase: string, varia
 }
 
 // 处理 LL-HLS 部分片段
-function rewritePartUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewritePartUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   const uriMatch = line.match(/URI="([^"]+)"/);
   if (uriMatch) {
     let originalUri = uriMatch[1];
@@ -499,7 +829,13 @@ function rewritePartUri(line: string, baseUrl: string, proxyBase: string, variab
 }
 
 // 处理内容导向
-function rewriteContentSteeringUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewriteContentSteeringUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   const serverUriMatch = line.match(/SERVER-URI="([^"]+)"/);
   if (serverUriMatch) {
     let originalUri = serverUriMatch[1];
@@ -514,7 +850,13 @@ function rewriteContentSteeringUri(line: string, baseUrl: string, proxyBase: str
 }
 
 // 处理会话数据
-function rewriteSessionDataUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewriteSessionDataUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   const uriMatch = line.match(/URI="([^"]+)"/);
   if (uriMatch) {
     let originalUri = uriMatch[1];
@@ -529,7 +871,13 @@ function rewriteSessionDataUri(line: string, baseUrl: string, proxyBase: string,
 }
 
 // 处理会话密钥
-function rewriteSessionKeyUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewriteSessionKeyUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   const uriMatch = line.match(/URI="([^"]+)"/);
   if (uriMatch) {
     let originalUri = uriMatch[1];
@@ -544,11 +892,19 @@ function rewriteSessionKeyUri(line: string, baseUrl: string, proxyBase: string, 
 }
 
 // 处理日期范围标签中的 URI
-function rewriteDateRangeUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewriteDateRangeUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   // SCTE-35 或其他可能包含 URI 的属性
-  const uriMatches = Array.from(line.matchAll(/([A-Z-]+)="([^"]*(?:https?:\/\/|\/)[^"]*)"/g));
+  const uriMatches = Array.from(
+    line.matchAll(/([A-Z-]+)="([^"]*(?:https?:\/\/|\/)[^"]*)"/g),
+  );
   let result = line;
-  
+
   for (const match of uriMatches) {
     const [fullMatch, , originalUri] = match;
     if (originalUri.includes('://') || originalUri.startsWith('/')) {
@@ -559,31 +915,40 @@ function rewriteDateRangeUri(line: string, baseUrl: string, proxyBase: string, v
       try {
         const resolvedUrl = resolveUrl(baseUrl, uri);
         const proxyUrl = `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`;
-        result = result.replace(fullMatch, fullMatch.replace(originalUri, proxyUrl));
+        result = result.replace(
+          fullMatch,
+          fullMatch.replace(originalUri, proxyUrl),
+        );
       } catch (error) {
         // 保持原始 URI 如果解析失败
       }
     }
   }
-  
+
   return result;
 }
 
 // 处理预加载提示 - LL-HLS 功能
-function rewritePreloadHintUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewritePreloadHintUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   const uriMatch = line.match(/URI="([^"]+)"/);
   if (uriMatch) {
     let originalUri = uriMatch[1];
     if (variables) {
       originalUri = substituteVariables(originalUri, variables);
     }
-    
+
     try {
       const resolvedUrl = resolveUrl(baseUrl, originalUri);
       // 根据 TYPE 属性选择适当的代理端点
       const typeMatch = line.match(/TYPE=([^,\s]+)/);
       const type = typeMatch ? typeMatch[1] : 'PART';
-      
+
       let proxyUrl: string;
       if (type === 'PART') {
         proxyUrl = `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`;
@@ -592,7 +957,7 @@ function rewritePreloadHintUri(line: string, baseUrl: string, proxyBase: string,
       } else {
         proxyUrl = `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`;
       }
-      
+
       return line.replace(uriMatch[0], `URI="${proxyUrl}"`);
     } catch (error) {
       if (process.env.NODE_ENV === 'development') {
@@ -605,14 +970,20 @@ function rewritePreloadHintUri(line: string, baseUrl: string, proxyBase: string,
 }
 
 // 处理渲染报告
-function rewriteRenditionReportUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewriteRenditionReportUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   const uriMatch = line.match(/URI="([^"]+)"/);
   if (uriMatch) {
     let originalUri = uriMatch[1];
     if (variables) {
       originalUri = substituteVariables(originalUri, variables);
     }
-    
+
     try {
       const resolvedUrl = resolveUrl(baseUrl, originalUri);
       const proxyUrl = `${proxyBase}/m3u8?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`;
@@ -628,14 +999,26 @@ function rewriteRenditionReportUri(line: string, baseUrl: string, proxyBase: str
 }
 
 // 处理服务器控制
-function rewriteServerControlUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewriteServerControlUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   // EXT-X-SERVER-CONTROL 通常不包含 URI，但为了完整性保留此函数
   // 如果将来有包含 URI 的扩展，可以在此处理
   return line;
 }
 
 // 处理跳过片段
-function rewriteSkipUri(line: string, baseUrl: string, proxyBase: string, variables?: Map<string, string>, sourceParam: string = ''): string {
+function rewriteSkipUri(
+  line: string,
+  baseUrl: string,
+  proxyBase: string,
+  variables?: Map<string, string>,
+  sourceParam: string = '',
+): string {
   // EXT-X-SKIP 不包含 URI，只包含 SKIPPED-SEGMENTS 等属性
   // 保持原样返回
   return line;
