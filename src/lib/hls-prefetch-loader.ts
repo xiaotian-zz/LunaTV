@@ -157,6 +157,10 @@ export function createPrefetchLoaders(
         throw err instanceof Error ? err : new Error('prefetch failed');
       });
     cache.set(url, entry);
+    // 兜底处理 rejection：纯后台预取被取消（seek/换集 abort）时没有 loader
+    // 在等待该 promise，不接住会抛 Uncaught (in promise) 控制台报错（纯噪音，
+    // 不影响播放）。loader 自己的 then/catch 链仍正常收到回调。
+    entry.promise.catch(() => {});
     evictOldest();
   };
 
