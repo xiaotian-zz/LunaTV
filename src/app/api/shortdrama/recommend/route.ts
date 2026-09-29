@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getCacheTime, getConfig } from '@/lib/config';
-import { recordRequest, getDbQueryCount, resetDbQueryCount } from '@/lib/performance-monitor';
+import {
+  recordRequest,
+  getDbQueryCount,
+  resetDbQueryCount,
+} from '@/lib/performance-monitor';
 import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 // 强制动态路由，禁用所有缓存
@@ -10,20 +14,25 @@ export const revalidate = 0;
 export const fetchCache = 'force-no-store';
 
 // 短剧相关分类关键词（父分类 + 子分类标签）
-const SHORT_DRAMA_KEYWORDS = ['短剧', '女频恋爱', '反转爽剧', '古装仙侠', '年代穿越', '脑洞悬疑', '现代都市'];
+const SHORT_DRAMA_KEYWORDS = [
+  '短剧',
+  '女频恋爱',
+  '反转爽剧',
+  '古装仙侠',
+  '年代穿越',
+  '脑洞悬疑',
+  '现代都市',
+];
 
 // 从单个短剧源获取数据（通过分类名称查找）
-async function fetchFromShortDramaSource(
-  api: string,
-  size: number
-) {
+async function fetchFromShortDramaSource(api: string, size: number) {
   // Step 1: 获取分类列表，找到短剧相关分类的ID
   const listUrl = `${api}?ac=list`;
 
   const listResponse = await fetch(listUrl, {
     headers: {
       'User-Agent': DEFAULT_USER_AGENT,
-      'Accept': 'application/json',
+      Accept: 'application/json',
     },
     signal: AbortSignal.timeout(10000),
   });
@@ -36,8 +45,10 @@ async function fetchFromShortDramaSource(
   const categories = listData.class || [];
 
   // 查找所有短剧相关分类（父分类 + 子分类标签）
-  const shortDramaCategories = categories.filter((cat: any) =>
-    cat.type_name && SHORT_DRAMA_KEYWORDS.some((kw: string) => cat.type_name.includes(kw))
+  const shortDramaCategories = categories.filter(
+    (cat: any) =>
+      cat.type_name &&
+      SHORT_DRAMA_KEYWORDS.some((kw: string) => cat.type_name.includes(kw)),
   );
 
   if (shortDramaCategories.length === 0) {
@@ -47,8 +58,10 @@ async function fetchFromShortDramaSource(
 
   // 优先用子分类（跳过纯"短剧"父分类），没有子分类则用父分类
   const PARENT_ONLY = ['短剧', '擦边短剧'];
-  const subCategory = shortDramaCategories.find((cat: any) => !PARENT_ONLY.includes(cat.type_name))
-    ?? shortDramaCategories[0];
+  const subCategory =
+    shortDramaCategories.find(
+      (cat: any) => !PARENT_ONLY.includes(cat.type_name),
+    ) ?? shortDramaCategories[0];
   const categoryId = subCategory.type_id;
   console.log(`找到短剧分类ID: ${categoryId} (${subCategory.type_name})`);
 
@@ -58,7 +71,7 @@ async function fetchFromShortDramaSource(
   const response = await fetch(apiUrl, {
     headers: {
       'User-Agent': DEFAULT_USER_AGENT,
-      'Accept': 'application/json',
+      Accept: 'application/json',
     },
     signal: AbortSignal.timeout(10000),
   });
@@ -85,17 +98,15 @@ async function fetchFromShortDramaSource(
 }
 
 // 服务端专用函数，从所有短剧源聚合数据
-async function getRecommendedShortDramasInternal(
-  category?: number,
-  size = 10
-) {
+async function getRecommendedShortDramasInternal(category?: number, size = 10) {
   try {
     // 获取配置
     const config = await getConfig();
 
     // 筛选出所有启用的短剧源
     const shortDramaSources = config.SourceConfig.filter(
-      source => source.type === 'shortdrama' && !source.disabled
+      (source) =>
+        source.type === 'shortdrama' && !source.disabled && source.api,
     );
 
     console.log(`📺 找到 ${shortDramaSources.length} 个配置的短剧源`);
@@ -105,38 +116,44 @@ async function getRecommendedShortDramasInternal(
       console.log('📺 使用默认短剧源');
       return await fetchFromShortDramaSource(
         'https://tyyszyapi.com/api.php/provide/vod',
-        size
+        size,
       );
     }
 
     // 有配置短剧源，聚合所有源的数据
     console.log('📺 聚合多个短剧源的数据');
     const results = await Promise.allSettled(
-      shortDramaSources.map(source => {
+      shortDramaSources.map((source) => {
         console.log(`🔄 请求短剧源: ${source.name}`);
         return fetchFromShortDramaSource(source.api, size);
-      })
+      }),
     );
 
     // 合并所有成功的结果
     const allItems: any[] = [];
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') {
-        console.log(`✅ ${shortDramaSources[index].name}: 获取到 ${result.value.length} 条数据`);
+        console.log(
+          `✅ ${shortDramaSources[index].name}: 获取到 ${result.value.length} 条数据`,
+        );
         allItems.push(...result.value);
       } else {
-        console.error(`❌ ${shortDramaSources[index].name}: 请求失败`, result.reason);
+        console.error(
+          `❌ ${shortDramaSources[index].name}: 请求失败`,
+          result.reason,
+        );
       }
     });
 
     // 去重（根据名称）
     const uniqueItems = Array.from(
-      new Map(allItems.map(item => [item.name, item])).values()
+      new Map(allItems.map((item) => [item.name, item])).values(),
     );
 
     // 按更新时间排序
-    uniqueItems.sort((a, b) =>
-      new Date(b.update_time).getTime() - new Date(a.update_time).getTime()
+    uniqueItems.sort(
+      (a, b) =>
+        new Date(b.update_time).getTime() - new Date(a.update_time).getTime(),
     );
 
     // 返回指定数量
@@ -151,7 +168,7 @@ async function getRecommendedShortDramasInternal(
       console.log('⚠️ 出错，fallback到默认源');
       return await fetchFromShortDramaSource(
         'https://tyyszyapi.com/api.php/provide/vod',
-        size
+        size,
       );
     } catch (fallbackError) {
       console.error('默认源也失败:', fallbackError);
@@ -175,7 +192,10 @@ export async function GET(request: NextRequest) {
 
     if ((category && isNaN(categoryNum!)) || isNaN(pageSize)) {
       const errorResponse = { error: '参数格式错误' };
-      const responseSize = Buffer.byteLength(JSON.stringify(errorResponse), 'utf8');
+      const responseSize = Buffer.byteLength(
+        JSON.stringify(errorResponse),
+        'utf8',
+      );
 
       recordRequest({
         timestamp: startTime,
@@ -183,7 +203,8 @@ export async function GET(request: NextRequest) {
         path: '/api/shortdrama/recommend',
         statusCode: 400,
         duration: Date.now() - startTime,
-        memoryUsed: (process.memoryUsage().heapUsed - startMemory) / 1024 / 1024,
+        memoryUsed:
+          (process.memoryUsage().heapUsed - startMemory) / 1024 / 1024,
         dbQueries: getDbQueryCount(),
         requestSize: 0,
         responseSize,
@@ -192,7 +213,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(errorResponse, { status: 400 });
     }
 
-    const result = await getRecommendedShortDramasInternal(categoryNum, pageSize);
+    const result = await getRecommendedShortDramasInternal(
+      categoryNum,
+      pageSize,
+    );
 
     // 使用统一的缓存时间（默认2小时）
     const cacheTime = await getCacheTime();
@@ -200,13 +224,22 @@ export async function GET(request: NextRequest) {
 
     console.log(`🕐 [RECOMMEND] 设置 ${cacheTime / 3600} 小时 HTTP 缓存`);
 
-    response.headers.set('Cache-Control', `public, max-age=${cacheTime}, s-maxage=${cacheTime}`);
+    response.headers.set(
+      'Cache-Control',
+      `public, max-age=${cacheTime}, s-maxage=${cacheTime}`,
+    );
     response.headers.set('CDN-Cache-Control', `public, s-maxage=${cacheTime}`);
-    response.headers.set('Vercel-CDN-Cache-Control', `public, s-maxage=${cacheTime}`);
+    response.headers.set(
+      'Vercel-CDN-Cache-Control',
+      `public, s-maxage=${cacheTime}`,
+    );
 
     // 调试信息
     response.headers.set('X-Cache-Duration', `${cacheTime / 3600}hours`);
-    response.headers.set('X-Cache-Expires-At', new Date(Date.now() + cacheTime * 1000).toISOString());
+    response.headers.set(
+      'X-Cache-Expires-At',
+      new Date(Date.now() + cacheTime * 1000).toISOString(),
+    );
     response.headers.set('X-Debug-Timestamp', new Date().toISOString());
 
     // Vary头确保不同设备有不同缓存
@@ -231,7 +264,10 @@ export async function GET(request: NextRequest) {
     console.error('获取推荐短剧失败:', error);
 
     const errorResponse = { error: '服务器内部错误' };
-    const responseSize = Buffer.byteLength(JSON.stringify(errorResponse), 'utf8');
+    const responseSize = Buffer.byteLength(
+      JSON.stringify(errorResponse),
+      'utf8',
+    );
 
     recordRequest({
       timestamp: startTime,

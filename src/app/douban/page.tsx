@@ -33,103 +33,123 @@ const doubanListOptions = (
   secondarySelection: string,
   multiLevelValues: Record<string, string>,
   selectedWeekday: string,
-  customCategories: Array<{ name: string; type: 'movie' | 'tv'; query: string }>
-) => infiniteQueryOptions({
-  queryKey: ['douban', type, primarySelection, secondarySelection, multiLevelValues, selectedWeekday],
-  queryFn: async ({ pageParam = 0 }) => {
-    if (type === 'custom') {
-      const selectedCategory = customCategories.find(
-        (cat) => cat.type === primarySelection && cat.query === secondarySelection
-      );
-      if (selectedCategory) {
-        return await getDoubanList({
-          tag: selectedCategory.query,
-          type: selectedCategory.type,
+  customCategories: Array<{
+    name: string;
+    type: 'movie' | 'tv';
+    query: string;
+  }>,
+) =>
+  infiniteQueryOptions({
+    queryKey: [
+      'douban',
+      type,
+      primarySelection,
+      secondarySelection,
+      multiLevelValues,
+      selectedWeekday,
+    ],
+    queryFn: async ({ pageParam = 0 }) => {
+      if (type === 'custom') {
+        const selectedCategory = customCategories.find(
+          (cat) =>
+            cat.type === primarySelection && cat.query === secondarySelection,
+        );
+        if (selectedCategory) {
+          return await getDoubanList({
+            tag: selectedCategory.query,
+            type: selectedCategory.type,
+            pageLimit: PAGE_SIZE,
+            pageStart: pageParam * PAGE_SIZE,
+          });
+        }
+        return { code: 200, message: 'success', list: [] };
+      } else if (type === 'anime' && primarySelection === '每日放送') {
+        if (pageParam > 0) {
+          return { code: 200, message: 'success', list: [] };
+        }
+        const calendarData = await GetBangumiCalendarData();
+        // Guard against non-array response (API blocked or error in CN environment)
+        if (!Array.isArray(calendarData)) {
+          console.warn(
+            '[Bangumi] Calendar data is not an array, API may be blocked:',
+            calendarData,
+          );
+          return { code: 200, message: 'success', list: [] };
+        }
+        const weekdayData = calendarData.find(
+          (item) => item.weekday.en === selectedWeekday,
+        );
+        if (weekdayData) {
+          return {
+            code: 200,
+            message: 'success',
+            list: weekdayData.items.map((item) => ({
+              id: item.id?.toString() || '',
+              title: item.name_cn || item.name,
+              poster:
+                item.images?.large ||
+                item.images?.common ||
+                item.images?.medium ||
+                item.images?.small ||
+                item.images?.grid ||
+                '/placeholder-poster.jpg',
+              rate: item.rating?.score?.toFixed(1) || '',
+              year: item.air_date?.split('-')?.[0] || '',
+            })),
+          };
+        }
+        return { code: 200, message: 'success', list: [] };
+      } else if (type === 'anime') {
+        return await getDoubanRecommends({
+          kind: primarySelection === '番剧' ? 'tv' : 'movie',
+          pageLimit: PAGE_SIZE,
+          pageStart: pageParam * PAGE_SIZE,
+          category: '动画',
+          format: primarySelection === '番剧' ? '电视剧' : '',
+          region: multiLevelValues.region || '',
+          year: multiLevelValues.year || '',
+          platform: multiLevelValues.platform || '',
+          sort: multiLevelValues.sort || '',
+          label: multiLevelValues.label || '',
+        });
+      } else if (primarySelection === '全部') {
+        return await getDoubanRecommends({
+          kind: type === 'show' ? 'tv' : (type as 'tv' | 'movie'),
+          pageLimit: PAGE_SIZE,
+          pageStart: pageParam * PAGE_SIZE,
+          category: multiLevelValues.type || '',
+          format: type === 'show' ? '综艺' : type === 'tv' ? '电视剧' : '',
+          region: multiLevelValues.region || '',
+          year: multiLevelValues.year || '',
+          platform: multiLevelValues.platform || '',
+          sort: multiLevelValues.sort || '',
+          label: multiLevelValues.label || '',
+        });
+      } else {
+        const kind =
+          type === 'tv' || type === 'show' ? 'tv' : (type as 'tv' | 'movie');
+        const category =
+          type === 'tv' || type === 'show' ? type : primarySelection;
+        return await getDoubanCategories({
+          kind,
+          category,
+          type: secondarySelection,
           pageLimit: PAGE_SIZE,
           pageStart: pageParam * PAGE_SIZE,
         });
       }
-      return { code: 200, message: 'success', list: [] };
-    } else if (type === 'anime' && primarySelection === '每日放送') {
-      if (pageParam > 0) {
-        return { code: 200, message: 'success', list: [] };
+    },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      if (!lastPage?.list || lastPage.list.length < PAGE_SIZE) {
+        return undefined;
       }
-      const calendarData = await GetBangumiCalendarData();
-      // Guard against non-array response (API blocked or error in CN environment)
-      if (!Array.isArray(calendarData)) {
-        console.warn('[Bangumi] Calendar data is not an array, API may be blocked:', calendarData);
-        return { code: 200, message: 'success', list: [] };
-      }
-      const weekdayData = calendarData.find((item) => item.weekday.en === selectedWeekday);
-      if (weekdayData) {
-        return {
-          code: 200,
-          message: 'success',
-          list: weekdayData.items.map((item) => ({
-            id: item.id?.toString() || '',
-            title: item.name_cn || item.name,
-            poster:
-              item.images?.large ||
-              item.images?.common ||
-              item.images?.medium ||
-              item.images?.small ||
-              item.images?.grid ||
-              '/placeholder-poster.jpg',
-            rate: item.rating?.score?.toFixed(1) || '',
-            year: item.air_date?.split('-')?.[0] || '',
-          })),
-        };
-      }
-      return { code: 200, message: 'success', list: [] };
-    } else if (type === 'anime') {
-      return await getDoubanRecommends({
-        kind: primarySelection === '番剧' ? 'tv' : 'movie',
-        pageLimit: PAGE_SIZE,
-        pageStart: pageParam * PAGE_SIZE,
-        category: '动画',
-        format: primarySelection === '番剧' ? '电视剧' : '',
-        region: multiLevelValues.region || '',
-        year: multiLevelValues.year || '',
-        platform: multiLevelValues.platform || '',
-        sort: multiLevelValues.sort || '',
-        label: multiLevelValues.label || '',
-      });
-    } else if (primarySelection === '全部') {
-      return await getDoubanRecommends({
-        kind: type === 'show' ? 'tv' : (type as 'tv' | 'movie'),
-        pageLimit: PAGE_SIZE,
-        pageStart: pageParam * PAGE_SIZE,
-        category: multiLevelValues.type || '',
-        format: type === 'show' ? '综艺' : type === 'tv' ? '电视剧' : '',
-        region: multiLevelValues.region || '',
-        year: multiLevelValues.year || '',
-        platform: multiLevelValues.platform || '',
-        sort: multiLevelValues.sort || '',
-        label: multiLevelValues.label || '',
-      });
-    } else {
-      const kind = type === 'tv' || type === 'show' ? 'tv' : (type as 'tv' | 'movie');
-      const category = type === 'tv' || type === 'show' ? type : primarySelection;
-      return await getDoubanCategories({
-        kind,
-        category,
-        type: secondarySelection,
-        pageLimit: PAGE_SIZE,
-        pageStart: pageParam * PAGE_SIZE,
-      });
-    }
-  },
-  initialPageParam: 0,
-  getNextPageParam: (lastPage, allPages) => {
-    if (!lastPage?.list || lastPage.list.length < PAGE_SIZE) {
-      return undefined;
-    }
-    return allPages.length;
-  },
-  enabled: !!type,
-  staleTime: 2 * 60 * 1000,
-  gcTime: 5 * 60 * 1000,
-});
+      return allPages.length;
+    },
+    enabled: !!type,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
 
 function DoubanPageClient() {
   const searchParams = useSearchParams();
@@ -137,13 +157,17 @@ function DoubanPageClient() {
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadingRef = useRef<HTMLDivElement>(null);
   const [showBackToTop, setShowBackToTop] = useState(false);
-  const [useVirtualization, setUseVirtualization] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('useDoubanVirtualization');
-      return saved !== null ? JSON.parse(saved) : true;
+  // 虚拟化偏好两段式初始化：SSR 与客户端首渲染必须用同一默认值（true），
+  // 否则 localStorage 存过 false 的设备首屏走另一渲染分支，触发
+  // React #418 hydration mismatch 导致 RSC 流中断、页面导航卡死
+  const [useVirtualization, setUseVirtualization] = useState(true);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('useDoubanVirtualization');
+    if (saved !== null) {
+      setUseVirtualization(JSON.parse(saved));
     }
-    return true;
-  });
+  }, []);
 
   const type = searchParams.get('type') || 'movie';
 
@@ -164,7 +188,9 @@ function DoubanPageClient() {
     return '全部';
   });
 
-  const [multiLevelValues, setMultiLevelValues] = useState<Record<string, string>>({
+  const [multiLevelValues, setMultiLevelValues] = useState<
+    Record<string, string>
+  >({
     type: 'all',
     region: 'all',
     year: 'all',
@@ -178,20 +204,25 @@ function DoubanPageClient() {
   const [aiCheckComplete, setAiCheckComplete] = useState(false);
 
   // 使用 useInfiniteQuery
-  const {
-    data,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
-    isLoading,
-  } = useInfiniteQuery(
-    doubanListOptions(type, primarySelection, secondarySelection, multiLevelValues, selectedWeekday, customCategories)
-  );
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } =
+    useInfiniteQuery(
+      doubanListOptions(
+        type,
+        primarySelection,
+        secondarySelection,
+        multiLevelValues,
+        selectedWeekday,
+        customCategories,
+      ),
+    );
 
   // 扁平化所有页面数据，过滤掉 null/undefined 项
   const allItems = useMemo(
-    () => data?.pages.flatMap((page) => page.list).filter((item): item is DoubanItem => !!item?.id) ?? [],
-    [data]
+    () =>
+      data?.pages
+        .flatMap((page) => page.list)
+        .filter((item): item is DoubanItem => !!item?.id) ?? [],
+    [data],
   );
 
   // 处理滚动到底部加载更多
@@ -268,11 +299,15 @@ function DoubanPageClient() {
   // 当type变化时重置选择器状态
   useEffect(() => {
     if (type === 'custom' && customCategories.length > 0) {
-      const types = Array.from(new Set(customCategories.map((cat) => cat.type)));
+      const types = Array.from(
+        new Set(customCategories.map((cat) => cat.type)),
+      );
       if (types.length > 0) {
         let selectedType = types.includes('movie') ? 'movie' : types[0];
         setPrimarySelection(selectedType);
-        const firstCategory = customCategories.find((cat) => cat.type === selectedType);
+        const firstCategory = customCategories.find(
+          (cat) => cat.type === selectedType,
+        );
         if (firstCategory) {
           setSecondarySelection(firstCategory.query);
         }
@@ -328,7 +363,9 @@ function DoubanPageClient() {
         });
 
         if (type === 'custom' && customCategories.length > 0) {
-          const firstCategory = customCategories.find((cat) => cat.type === value);
+          const firstCategory = customCategories.find(
+            (cat) => cat.type === value,
+          );
           if (firstCategory) {
             setPrimarySelection(value);
             setSecondarySelection(firstCategory.query);
@@ -349,7 +386,7 @@ function DoubanPageClient() {
         }
       }
     },
-    [primarySelection, type, customCategories]
+    [primarySelection, type, customCategories],
   );
 
   const handleSecondaryChange = useCallback(
@@ -358,12 +395,15 @@ function DoubanPageClient() {
         setSecondarySelection(value);
       }
     },
-    [secondarySelection]
+    [secondarySelection],
   );
 
   const handleMultiLevelChange = useCallback(
     (values: Record<string, string>) => {
-      const isEqual = (obj1: Record<string, string>, obj2: Record<string, string>) => {
+      const isEqual = (
+        obj1: Record<string, string>,
+        obj2: Record<string, string>,
+      ) => {
         const keys1 = Object.keys(obj1).sort();
         const keys2 = Object.keys(obj2).sort();
         if (keys1.length !== keys2.length) return false;
@@ -374,7 +414,7 @@ function DoubanPageClient() {
         setMultiLevelValues(values);
       }
     },
-    [multiLevelValues]
+    [multiLevelValues],
   );
 
   const handleWeekdayChange = useCallback((weekday: string) => {
@@ -500,11 +540,14 @@ function DoubanPageClient() {
           {/* 条件渲染：虚拟化 vs 传统网格 */}
           {useVirtualization ? (
             <>
-              {isLoading || !selectorsReady
-                ? <div className='justify-start grid grid-cols-3 gap-x-2 gap-y-12 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,minmax(160px,1fr))] sm:gap-x-8 sm:gap-y-20'>
-                  {skeletonData.map((index) => <DoubanCardSkeleton key={index} />)}
+              {isLoading || !selectorsReady ? (
+                <div className='justify-start grid grid-cols-3 gap-x-2 gap-y-12 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,minmax(160px,1fr))] sm:gap-x-8 sm:gap-y-20'>
+                  {skeletonData.map((index) => (
+                    <DoubanCardSkeleton key={index} />
+                  ))}
                 </div>
-                : <VirtualGrid
+              ) : (
+                <VirtualGrid
                   items={allItems}
                   className='grid-cols-3 gap-x-2 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,minmax(160px,1fr))] sm:gap-x-8'
                   rowGapClass='pb-12 sm:pb-20'
@@ -513,7 +556,16 @@ function DoubanPageClient() {
                   endReachedThreshold={3}
                   restoreKey={`douban:${type}:${primarySelection}:${secondarySelection}:${selectedWeekday}:${JSON.stringify(multiLevelValues)}`}
                   renderItem={(item, index) => {
-                    const mappedType = type === 'movie' ? 'movie' : type === 'show' ? 'variety' : type === 'tv' ? 'tv' : type === 'anime' ? 'anime' : '';
+                    const mappedType =
+                      type === 'movie'
+                        ? 'movie'
+                        : type === 'show'
+                          ? 'variety'
+                          : type === 'tv'
+                            ? 'tv'
+                            : type === 'anime'
+                              ? 'anime'
+                              : '';
                     return (
                       <div key={`${item.title}-${index}`} className='w-full'>
                         <VideoCard
@@ -527,7 +579,9 @@ function DoubanPageClient() {
                           rate={item.rate}
                           year={item.year}
                           type={mappedType}
-                          isBangumi={type === 'anime' && primarySelection === '每日放送'}
+                          isBangumi={
+                            type === 'anime' && primarySelection === '每日放送'
+                          }
                           aiEnabled={aiEnabled}
                           aiCheckComplete={aiCheckComplete}
                           priority={index < 30}
@@ -536,14 +590,16 @@ function DoubanPageClient() {
                     );
                   }}
                 />
-              }
+              )}
 
               {/* 加载更多指示器 */}
               {hasNextPage && !isLoading && (
                 <div
                   ref={(el) => {
                     if (el && el.offsetParent !== null) {
-                      (loadingRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+                      (
+                        loadingRef as React.MutableRefObject<HTMLDivElement | null>
+                      ).current = el;
                     }
                   }}
                   className='flex justify-center mt-12 py-8'
@@ -557,11 +613,28 @@ function DoubanPageClient() {
                           <div className='absolute inset-0 animate-spin rounded-full h-8 w-8 border-[3px] border-transparent border-t-green-500 dark:border-t-green-400'></div>
                         </div>
                         <div className='flex items-center gap-1'>
-                          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>加载中</span>
+                          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                            加载中
+                          </span>
                           <span className='flex gap-0.5'>
-                            <span className='animate-bounce' style={{ animationDelay: '0ms' }}>.</span>
-                            <span className='animate-bounce' style={{ animationDelay: '150ms' }}>.</span>
-                            <span className='animate-bounce' style={{ animationDelay: '300ms' }}>.</span>
+                            <span
+                              className='animate-bounce'
+                              style={{ animationDelay: '0ms' }}
+                            >
+                              .
+                            </span>
+                            <span
+                              className='animate-bounce'
+                              style={{ animationDelay: '150ms' }}
+                            >
+                              .
+                            </span>
+                            <span
+                              className='animate-bounce'
+                              style={{ animationDelay: '300ms' }}
+                            >
+                              .
+                            </span>
                           </span>
                         </div>
                       </div>
@@ -579,15 +652,29 @@ function DoubanPageClient() {
                     <div className='relative flex flex-col items-center gap-2'>
                       <div className='relative'>
                         <div className='w-12 h-12 rounded-full bg-linear-to-br from-blue-500 to-purple-500 flex items-center justify-center shadow-lg'>
-                          <svg className='w-7 h-7 text-white' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-                            <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2.5' d='M5 13l4 4L19 7'></path>
+                          <svg
+                            className='w-7 h-7 text-white'
+                            fill='none'
+                            stroke='currentColor'
+                            viewBox='0 0 24 24'
+                          >
+                            <path
+                              strokeLinecap='round'
+                              strokeLinejoin='round'
+                              strokeWidth='2.5'
+                              d='M5 13l4 4L19 7'
+                            ></path>
                           </svg>
                         </div>
                         <div className='absolute inset-0 rounded-full bg-blue-400/30 animate-ping'></div>
                       </div>
                       <div className='text-center'>
-                        <p className='text-base font-semibold text-gray-800 dark:text-gray-200 mb-1'>已加载全部内容</p>
-                        <p className='text-xs text-gray-600 dark:text-gray-400'>共 {allItems.length} 项</p>
+                        <p className='text-base font-semibold text-gray-800 dark:text-gray-200 mb-1'>
+                          已加载全部内容
+                        </p>
+                        <p className='text-xs text-gray-600 dark:text-gray-400'>
+                          共 {allItems.length} 项
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -603,16 +690,30 @@ function DoubanPageClient() {
                     <div className='relative flex flex-col items-center gap-4'>
                       <div className='relative'>
                         <div className='w-24 h-24 rounded-full bg-linear-to-br from-gray-100 to-slate-200 dark:from-gray-700 dark:to-slate-700 flex items-center justify-center shadow-lg'>
-                          <svg className='w-12 h-12 text-gray-400 dark:text-gray-500' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-                            <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='1.5' d='M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4'></path>
+                          <svg
+                            className='w-12 h-12 text-gray-400 dark:text-gray-500'
+                            fill='none'
+                            stroke='currentColor'
+                            viewBox='0 0 24 24'
+                          >
+                            <path
+                              strokeLinecap='round'
+                              strokeLinejoin='round'
+                              strokeWidth='1.5'
+                              d='M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4'
+                            ></path>
                           </svg>
                         </div>
                         <div className='absolute -top-1 -right-1 w-3 h-3 bg-blue-400 rounded-full animate-ping'></div>
                         <div className='absolute -bottom-1 -left-1 w-2 h-2 bg-purple-400 rounded-full animate-pulse'></div>
                       </div>
                       <div className='text-center space-y-2'>
-                        <h3 className='text-xl font-bold text-gray-800 dark:text-gray-200'>暂无相关内容</h3>
-                        <p className='text-sm text-gray-600 dark:text-gray-400 max-w-xs'>尝试调整筛选条件或切换其他分类查看更多内容</p>
+                        <h3 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
+                          暂无相关内容
+                        </h3>
+                        <p className='text-sm text-gray-600 dark:text-gray-400 max-w-xs'>
+                          尝试调整筛选条件或切换其他分类查看更多内容
+                        </p>
                       </div>
                       <div className='w-16 h-1 bg-linear-to-r from-transparent via-gray-300 to-transparent dark:via-gray-600 rounded-full'></div>
                     </div>
@@ -625,29 +726,43 @@ function DoubanPageClient() {
               {/* 传统网格渲染 */}
               <div className='justify-start grid grid-cols-3 gap-x-2 gap-y-12 px-0 sm:px-2 sm:grid-cols-[repeat(auto-fill,minmax(160px,1fr))] sm:gap-x-8 sm:gap-y-20'>
                 {isLoading || !selectorsReady
-                  ? skeletonData.map((index) => <DoubanCardSkeleton key={index} />)
+                  ? skeletonData.map((index) => (
+                      <DoubanCardSkeleton key={index} />
+                    ))
                   : allItems.map((item, index) => {
-                    const mappedType = type === 'movie' ? 'movie' : type === 'show' ? 'variety' : type === 'tv' ? 'tv' : type === 'anime' ? 'anime' : '';
-                    return (
-                      <div key={`${item.title}-${index}`} className='w-full'>
-                        <VideoCard
-                          from='douban'
-                          source='douban'
-                          id={item.id}
-                          source_name='豆瓣'
-                          title={item.title}
-                          poster={item.poster}
-                          douban_id={Number(item.id)}
-                          rate={item.rate}
-                          year={item.year}
-                          type={mappedType}
-                          isBangumi={type === 'anime' && primarySelection === '每日放送'}
-                          aiEnabled={aiEnabled}
-                          aiCheckComplete={aiCheckComplete}
-                        />
-                      </div>
-                    );
-                  })}
+                      const mappedType =
+                        type === 'movie'
+                          ? 'movie'
+                          : type === 'show'
+                            ? 'variety'
+                            : type === 'tv'
+                              ? 'tv'
+                              : type === 'anime'
+                                ? 'anime'
+                                : '';
+                      return (
+                        <div key={`${item.title}-${index}`} className='w-full'>
+                          <VideoCard
+                            from='douban'
+                            source='douban'
+                            id={item.id}
+                            source_name='豆瓣'
+                            title={item.title}
+                            poster={item.poster}
+                            douban_id={Number(item.id)}
+                            rate={item.rate}
+                            year={item.year}
+                            type={mappedType}
+                            isBangumi={
+                              type === 'anime' &&
+                              primarySelection === '每日放送'
+                            }
+                            aiEnabled={aiEnabled}
+                            aiCheckComplete={aiCheckComplete}
+                          />
+                        </div>
+                      );
+                    })}
               </div>
 
               {/* 加载更多指示器 */}
@@ -655,7 +770,9 @@ function DoubanPageClient() {
                 <div
                   ref={(el) => {
                     if (el && el.offsetParent !== null) {
-                      (loadingRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+                      (
+                        loadingRef as React.MutableRefObject<HTMLDivElement | null>
+                      ).current = el;
                     }
                   }}
                   className='flex justify-center mt-12 py-8'
@@ -675,11 +792,28 @@ function DoubanPageClient() {
 
                         {/* 文字和点动画 */}
                         <div className='flex items-center gap-1'>
-                          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>加载中</span>
+                          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+                            加载中
+                          </span>
                           <span className='flex gap-0.5'>
-                            <span className='animate-bounce' style={{ animationDelay: '0ms' }}>.</span>
-                            <span className='animate-bounce' style={{ animationDelay: '150ms' }}>.</span>
-                            <span className='animate-bounce' style={{ animationDelay: '300ms' }}>.</span>
+                            <span
+                              className='animate-bounce'
+                              style={{ animationDelay: '0ms' }}
+                            >
+                              .
+                            </span>
+                            <span
+                              className='animate-bounce'
+                              style={{ animationDelay: '150ms' }}
+                            >
+                              .
+                            </span>
+                            <span
+                              className='animate-bounce'
+                              style={{ animationDelay: '300ms' }}
+                            >
+                              .
+                            </span>
                           </span>
                         </div>
                       </div>
@@ -696,8 +830,18 @@ function DoubanPageClient() {
                     <div className='relative flex flex-col items-center gap-2'>
                       <div className='relative'>
                         <div className='w-12 h-12 rounded-full bg-linear-to-br from-blue-500 to-purple-500 flex items-center justify-center shadow-lg'>
-                          <svg className='w-7 h-7 text-white' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-                            <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2.5' d='M5 13l4 4L19 7'></path>
+                          <svg
+                            className='w-7 h-7 text-white'
+                            fill='none'
+                            stroke='currentColor'
+                            viewBox='0 0 24 24'
+                          >
+                            <path
+                              strokeLinecap='round'
+                              strokeLinejoin='round'
+                              strokeWidth='2.5'
+                              d='M5 13l4 4L19 7'
+                            ></path>
                           </svg>
                         </div>
                         <div className='absolute inset-0 rounded-full bg-blue-400/30 animate-ping'></div>
@@ -728,8 +872,18 @@ function DoubanPageClient() {
                       {/* 插图图标 */}
                       <div className='relative'>
                         <div className='w-24 h-24 rounded-full bg-linear-to-br from-gray-100 to-slate-200 dark:from-gray-700 dark:to-slate-700 flex items-center justify-center shadow-lg'>
-                          <svg className='w-12 h-12 text-gray-400 dark:text-gray-500' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
-                            <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='1.5' d='M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4'></path>
+                          <svg
+                            className='w-12 h-12 text-gray-400 dark:text-gray-500'
+                            fill='none'
+                            stroke='currentColor'
+                            viewBox='0 0 24 24'
+                          >
+                            <path
+                              strokeLinecap='round'
+                              strokeLinejoin='round'
+                              strokeWidth='1.5'
+                              d='M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4'
+                            ></path>
                           </svg>
                         </div>
                         {/* 浮动小点装饰 */}
@@ -761,10 +915,11 @@ function DoubanPageClient() {
       {/* 返回顶部悬浮按钮 */}
       <button
         onClick={scrollToTop}
-        className={`fixed bottom-20 md:bottom-6 right-6 z-500 w-12 h-12 bg-green-500/90 hover:bg-green-500 text-white rounded-full shadow-lg backdrop-blur-sm transition-all duration-300 ease-in-out flex items-center justify-center group ${showBackToTop
-          ? 'opacity-100 translate-y-0 pointer-events-auto'
-          : 'opacity-0 translate-y-4 pointer-events-none'
-          }`}
+        className={`fixed bottom-20 md:bottom-6 right-6 z-500 w-12 h-12 bg-green-500/90 hover:bg-green-500 text-white rounded-full shadow-lg backdrop-blur-sm transition-all duration-300 ease-in-out flex items-center justify-center group ${
+          showBackToTop
+            ? 'opacity-100 translate-y-0 pointer-events-auto'
+            : 'opacity-0 translate-y-4 pointer-events-none'
+        }`}
         aria-label='返回顶部'
       >
         <ChevronUp className='w-6 h-6 transition-transform group-hover:scale-110' />
