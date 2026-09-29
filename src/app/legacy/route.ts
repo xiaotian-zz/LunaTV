@@ -42,8 +42,11 @@ export async function GET(request: NextRequest) {
     body = loginBody(needUsername);
     script = loginScript(needUsername);
   } else if (!type) {
+    // 服务端并发预取三区块数据内嵌 HTML：iPad 打开首页由「HTML + 3 次串行 XHR」
+    // 变为单次 HTML 往返直渲染，消除跨境 RTT 叠加导致的"打不开"感
+    const homeData = await fetchHomeData(request);
     body = homeBody(authInfo.username || '');
-    script = homeScript();
+    script = homeScript(homeData);
   } else {
     title = '分类';
     const init = resolveInit(type);
@@ -141,8 +144,58 @@ ${sec('tv', 'row-tv', '热门剧集', '/legacy?type=tv')}
 ${sec('show', 'row-show', '热门综艺', '/legacy?type=show')}`;
 }
 
-/** 首页脚本：按主站 useHomePageQueries 的数据源串行加载三个区块（iOS 9 并发 XHR 受限） */
-function homeScript(): string {
+/** 首页三区块定义（与 homeScript 中 SECS 保持一致） */
+const HOME_SECS = [
+  { kind: 'movie', category: '热门', type: '全部' },
+  { kind: 'tv', category: 'tv', type: 'tv' },
+  { kind: 'tv', category: 'show', type: 'show' },
+] as const;
+
+/** 服务端并发预取首页三区块数据（复用本站 /api/douban/categories 的 2h 缓存；单块 8s 超时失败给空列表走前端兜底） */
+async function fetchHomeData(request: NextRequest): Promise<
+  Array<{
+    kind: string;
+    list: Array<{
+      title?: string;
+      poster?: string;
+      rate?: string;
+      id?: string | number;
+      year?: string;
+    }>;
+  }>
+> {
+  return Promise.all(
+    HOME_SECS.map(async (s) => {
+      try {
+        const url = new URL('/api/douban/categories', request.url);
+        url.searchParams.set('kind', s.kind);
+        url.searchParams.set('category', s.category);
+        url.searchParams.set('type', s.type);
+        url.searchParams.set('limit', '20');
+        url.searchParams.set('start', '0');
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 8000);
+        const res = await fetch(url, {
+          signal: ac.signal,
+          headers: { cookie: request.headers.get('cookie') || '' },
+        });
+        clearTimeout(timer);
+        const data = await res.json();
+        return {
+          kind: s.kind,
+          list: Array.isArray(data && data.list) ? data.list : [],
+        };
+      } catch {
+        return { kind: s.kind, list: [] };
+      }
+    }),
+  );
+}
+
+/** 首页脚本：服务端内嵌数据直渲染；任一区块无数据时回退 iOS 9 串行 XHR 兜底 */
+function homeScript(data: Awaited<ReturnType<typeof fetchHomeData>>): string {
+  // 内嵌 JSON 转义 </script 防止提前闭合脚本标签
+  const payload = JSON.stringify(data).replace(/<\//g, '<\\/');
   return `
 (function () {
   var SECS = [
@@ -150,6 +203,7 @@ function homeScript(): string {
     { id: 'row-tv', kind: 'tv', category: 'tv', type: 'tv' },
     { id: 'row-show', kind: 'tv', category: 'show', type: 'show' }
   ];
+  var INIT = ${payload};
   function esc(s) {
     var d = document.createElement('div');
     d.appendChild(document.createTextNode(String(s == null ? '' : s)));
@@ -164,6 +218,13 @@ function homeScript(): string {
       (it.rate && it.rate !== '0' ? '<span class="rate' + lunaRateClass(it.rate) + '">' + esc(it.rate) + '</span>' : '') +
       '<span class="t">' + esc(it.title) + '</span></a>';
   }
+  function renderSec(s, list) {
+    var box = document.getElementById(s.id);
+    if (!box) return;
+    var html = '';
+    for (var j = 0; j < list.length; j++) html += renderItem(list[j], s.kind);
+    box.innerHTML = html;
+  }
   function loadSec(i) {
     var s = SECS[i];
     if (!s) return;
@@ -177,14 +238,23 @@ function homeScript(): string {
       if (status !== 200 || !list.length) {
         box.innerHTML = '<div class="loading">暂无内容</div>';
       } else {
-        var html = '';
-        for (var j = 0; j < list.length; j++) html += renderItem(list[j], s.kind);
-        box.innerHTML = html;
+        renderSec(s, list);
       }
       loadSec(i + 1);
     });
   }
-  loadSec(0);
+  (function boot() {
+    for (var i = 0; i < SECS.length; i++) {
+      var d = INIT[i];
+      if (d && d.list && d.list.length) {
+        renderSec(SECS[i], d.list);
+      } else {
+        // 该区块预取失败：从这里开始走串行 XHR 兜底（后续区块也串行）
+        loadSec(i);
+        return;
+      }
+    }
+  })();
 })();`;
 }
 

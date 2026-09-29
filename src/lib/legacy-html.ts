@@ -367,6 +367,10 @@ function lunaXhr(method, url, data, cb) {
   var xhr = new XMLHttpRequest();
   xhr.open(method, url, true);
   xhr.setRequestHeader('Content-Type', 'application/json');
+  // 超时保护：iOS 9 串行加载链中一个请求挂起会堵死整页，20s 后释放回调避免假死
+  xhr.timeout = 20000;
+  xhr.ontimeout = function () { cb(0, null); };
+  xhr.onerror = function () { cb(0, null); };
   xhr.onreadystatechange = function () {
     if (xhr.readyState === 4) {
       var body = null;
