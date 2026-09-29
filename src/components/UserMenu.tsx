@@ -1,14 +1,15 @@
-/* eslint-disable no-console,@typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
+/* eslint-disable no-console */
 
 'use client';
 
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Bell,
   Calendar,
-  Check,
   Download,
   Heart,
   KeyRound,
+  LogIn,
   LogOut,
   PlayCircle,
   Settings,
@@ -21,34 +22,35 @@ import {
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useQueryClient } from '@tanstack/react-query';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
+import type { PlayRecord } from '@/lib/types';
 import { CURRENT_VERSION } from '@/lib/version';
-import { checkForUpdates, UpdateStatus } from '@/lib/version_check';
-import type { PlayRecord, Favorite } from '@/lib/types';
+import { UpdateStatus } from '@/lib/version_check';
+import {
+  useChangePasswordMutation,
+  useFavoritesQuery,
+  useInvalidateUserMenuData,
+  usePlayRecordsQuery,
+  useServerConfigQuery,
+  useVersionCheckQuery,
+  useWatchRoomConfigQuery,
+} from '@/hooks/useUserMenuQueries';
+import {
+  useRefreshWatchingUpdates,
+  useWatchingUpdatesQuery,
+} from '@/hooks/useWatchingUpdates';
 
 import { useDownload } from '@/contexts/DownloadContext';
 
+import { SettingsPanel } from './SettingsPanel';
 import { VersionPanel } from './VersionPanel';
 import VideoCard from './VideoCard';
-import { SettingsPanel } from './SettingsPanel';
-import {
-  useWatchRoomConfigQuery,
-  useServerConfigQuery,
-  useVersionCheckQuery,
-  usePlayRecordsQuery,
-  useFavoritesQuery,
-  useChangePasswordMutation,
-  useInvalidateUserMenuData,
-} from '@/hooks/useUserMenuQueries';
-import {
-  useWatchingUpdatesQuery,
-  useRefreshWatchingUpdates,
-} from '@/hooks/useWatchingUpdates';
 
 interface AuthInfo {
   username?: string;
+  password?: string;
+  trustedNetwork?: boolean;
   role?: 'owner' | 'admin' | 'user';
 }
 
@@ -409,9 +411,26 @@ export const UserMenu: React.FC = () => {
   const showAdminPanel =
     authInfo?.role === 'owner' || authInfo?.role === 'admin';
 
+  // 登录态判断：kvrocks/redis 等多用户模式看 username；localstorage 模式
+  // cookie 无 username 只存密码哈希，看 password；受信网络放行视为已登录。
+  // 未登录时菜单显示"立即登录"而非"登出"（修复全新部署访客找不到登录入口）
+  const isLoggedIn =
+    !!authInfo &&
+    (authInfo.trustedNetwork ||
+      (storageType === 'localstorage'
+        ? !!authInfo.password
+        : !!authInfo.username));
+
   // 检查是否显示修改密码按钮
   const showChangePassword =
-    authInfo?.role !== 'owner' && storageType !== 'localstorage';
+    isLoggedIn && authInfo?.role !== 'owner' && storageType !== 'localstorage';
+
+  // 跳转登录页，携带当前路径便于登录后回跳
+  const handleLogin = () => {
+    setIsOpen(false);
+    const current = window.location.pathname + window.location.search;
+    router.push(`/login?redirect=${encodeURIComponent(current)}`);
+  };
 
   // 调试信息
   console.log('UserMenu 更新提醒调试:', {
@@ -457,19 +476,21 @@ export const UserMenu: React.FC = () => {
               </span>
               <span
                 className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium ${
-                  (authInfo?.role || 'user') === 'owner'
-                    ? 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300'
-                    : (authInfo?.role || 'user') === 'admin'
-                      ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
-                      : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+                  !isLoggedIn
+                    ? 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+                    : (authInfo?.role || 'user') === 'owner'
+                      ? 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300'
+                      : (authInfo?.role || 'user') === 'admin'
+                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
+                        : 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
                 }`}
               >
-                {getRoleText(authInfo?.role || 'user')}
+                {isLoggedIn ? getRoleText(authInfo?.role || 'user') : '游客'}
               </span>
             </div>
             <div className='flex items-center justify-between'>
               <div className='font-semibold text-gray-900 dark:text-gray-100 text-sm truncate'>
-                {authInfo?.username || 'default'}
+                {isLoggedIn ? authInfo?.username || 'default' : '未登录'}
               </div>
               <div className='text-[10px] text-gray-400 dark:text-gray-500'>
                 数据存储：
@@ -626,14 +647,24 @@ export const UserMenu: React.FC = () => {
           {/* 分割线 */}
           <div className='my-1 border-t border-gray-200 dark:border-gray-700'></div>
 
-          {/* 登出按钮 */}
-          <button
-            onClick={handleLogout}
-            className='w-full px-3 py-2 text-left flex items-center gap-2.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-[background-color] duration-150 ease-in-out text-sm'
-          >
-            <LogOut className='w-4 h-4' />
-            <span className='font-medium'>登出</span>
-          </button>
+          {/* 登录/登出按钮 */}
+          {isLoggedIn ? (
+            <button
+              onClick={handleLogout}
+              className='w-full px-3 py-2 text-left flex items-center gap-2.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-[background-color] duration-150 ease-in-out text-sm'
+            >
+              <LogOut className='w-4 h-4' />
+              <span className='font-medium'>登出</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleLogin}
+              className='w-full px-3 py-2 text-left flex items-center gap-2.5 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 transition-[background-color] duration-150 ease-in-out text-sm'
+            >
+              <LogIn className='w-4 h-4' />
+              <span className='font-medium'>立即登录</span>
+            </button>
+          )}
 
           {/* 分割线 */}
           <div className='my-1 border-t border-gray-200 dark:border-gray-700'></div>
