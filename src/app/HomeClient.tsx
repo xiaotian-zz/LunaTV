@@ -516,8 +516,16 @@ function HomeClient({
     typeof window !== 'undefined' ? localStorage.getItem('storageType') : null;
   const showWatchingUpdates =
     authInfo?.username && storageType !== 'localstorage';
+  // 首屏数据优先：延迟 8 秒再启动追番更新检查，避免几十个 /api/detail
+  // 请求在页面打开瞬间与首屏数据抢浏览器并发连接和服务器资源
+  const [updatesReady, setUpdatesReady] = useState(false);
+  useEffect(() => {
+    if (!showWatchingUpdates) return;
+    const timer = setTimeout(() => setUpdatesReady(true), 8000);
+    return () => clearTimeout(timer);
+  }, [showWatchingUpdates]);
   useWatchingUpdatesQuery({
-    enabled: showWatchingUpdates, // 只在登录且非 localStorage 模式时启用
+    enabled: showWatchingUpdates && updatesReady,
   });
 
   // 🚀 TanStack Query - 使用 useQuery 获取播放记录（自动缓存，跨页面持久化）

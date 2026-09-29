@@ -16,11 +16,9 @@
  */
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { usePlayRecordsArrayQuery } from './usePlayRecordsQuery';
-import { useSourceMapQuery } from './useSourcesQuery';
-import { useRemindersQuery } from './useRemindersQuery';
-import type { PlayRecord } from '@/lib/types';
+
 import type { Reminder } from '@/lib/db.client';
+import type { PlayRecord } from '@/lib/types';
 
 // ============================================================================
 // Constants
@@ -66,13 +64,17 @@ export interface WatchingUpdate {
  * 获取观看时的原始总集数，如果没有记录则使用当前播放记录中的集数
  * 关键修复：对于旧数据，同步修复original_episodes，避免被后续更新覆盖
  */
-async function getOriginalEpisodes(record: PlayRecord & { key: string }, videoId: string, recordKey: string): Promise<number> {
+async function getOriginalEpisodes(
+  record: PlayRecord & { key: string },
+  videoId: string,
+  recordKey: string,
+): Promise<number> {
   // 添加详细调试信息
   console.log(`🔍 getOriginalEpisodes 调试信息 - ${record.title}:`, {
     'record.original_episodes': record.original_episodes,
     'record.total_episodes': record.total_episodes,
-    '类型检查': typeof record.original_episodes,
-    '完整记录': record
+    类型检查: typeof record.original_episodes,
+    完整记录: record,
   });
 
   // 🔑 关键修复：不信任内存中的 original_episodes（可能来自缓存）
@@ -85,29 +87,44 @@ async function getOriginalEpisodes(record: PlayRecord & { key: string }, videoId
       const freshRecord = freshRecords[recordKey];
 
       if (freshRecord?.original_episodes && freshRecord.original_episodes > 0) {
-        console.log(`📚 从数据库读取到最新原始集数: ${record.title} = ${freshRecord.original_episodes}集 (当前播放记录: ${record.total_episodes}集)`);
+        console.log(
+          `📚 从数据库读取到最新原始集数: ${record.title} = ${freshRecord.original_episodes}集 (当前播放记录: ${record.total_episodes}集)`,
+        );
         return freshRecord.original_episodes;
       }
     }
   } catch (error) {
-    console.warn(`⚠️ 从数据库读取原始集数失败: ${record.title}，使用内存值`, error);
+    console.warn(
+      `⚠️ 从数据库读取原始集数失败: ${record.title}，使用内存值`,
+      error,
+    );
   }
 
   // 备用方案：如果数据库读取失败，使用内存中的值
   if (record.original_episodes && record.original_episodes > 0) {
-    console.log(`📚 使用内存中的原始集数: ${record.title} = ${record.original_episodes}集 (当前播放记录: ${record.total_episodes}集)`);
+    console.log(
+      `📚 使用内存中的原始集数: ${record.title} = ${record.original_episodes}集 (当前播放记录: ${record.total_episodes}集)`,
+    );
     return record.original_episodes;
   }
 
   // 🔑 如果数据库中也没有 original_episodes，使用当前 total_episodes
   // 但不要写回数据库！只返回值，让首次保存时自然设置
-  if ((record.original_episodes === undefined || record.original_episodes === null) && record.total_episodes > 0) {
-    console.log(`⚠️ ${record.title} 缺少原始集数，使用当前值 ${record.total_episodes}集（不写入数据库）`);
+  if (
+    (record.original_episodes === undefined ||
+      record.original_episodes === null) &&
+    record.total_episodes > 0
+  ) {
+    console.log(
+      `⚠️ ${record.title} 缺少原始集数，使用当前值 ${record.total_episodes}集（不写入数据库）`,
+    );
     return record.total_episodes;
   }
 
   // 都没有的话，使用当前播放记录集数（最后的fallback）
-  console.log(`⚠️ 该剧集未找到原始集数记录，使用当前播放记录集数: ${record.title} = ${record.total_episodes}集`);
+  console.log(
+    `⚠️ 该剧集未找到原始集数记录，使用当前播放记录集数: ${record.title} = ${record.total_episodes}集`,
+  );
   return record.total_episodes;
 }
 
@@ -139,7 +156,10 @@ async function checkSingleRecordUpdate(
     });
 
     if (!response.ok) {
-      console.warn(`❌ [追番更新] 获取${record.title}详情失败:`, response.status);
+      console.warn(
+        `❌ [追番更新] 获取${record.title}详情失败:`,
+        response.status,
+      );
       return {
         hasUpdate: false,
         hasNewEpisode: false,
@@ -157,19 +177,23 @@ async function checkSingleRecordUpdate(
 
     // 添加详细调试信息
     console.log(`📊 [追番更新] ${record.title} API检查详情:`, {
-      'API返回集数': latestEpisodes,
-      '当前观看到': record.index,
-      '播放记录集数': record.total_episodes
+      API返回集数: latestEpisodes,
+      当前观看到: record.index,
+      播放记录集数: record.total_episodes,
     });
 
     // 获取观看时的原始总集数（不会被自动更新影响）
     const recordKey = record.key;
-    const originalTotalEpisodes = await getOriginalEpisodes(record, videoId, recordKey);
+    const originalTotalEpisodes = await getOriginalEpisodes(
+      record,
+      videoId,
+      recordKey,
+    );
 
     console.log(`📊 [追番更新] ${record.title} 集数对比:`, {
-      '原始集数': originalTotalEpisodes,
-      '当前播放记录集数': record.total_episodes,
-      'API返回集数': latestEpisodes
+      原始集数: originalTotalEpisodes,
+      当前播放记录集数: record.total_episodes,
+      API返回集数: latestEpisodes,
     });
 
     // 检查两种情况：
@@ -179,31 +203,47 @@ async function checkSingleRecordUpdate(
     const newEpisodes = hasUpdate ? latestEpisodes - originalTotalEpisodes : 0;
 
     // 计算保护后的集数（防止API缓存问题导致集数回退）
-    const protectedTotalEpisodes = Math.max(latestEpisodes, originalTotalEpisodes, record.total_episodes);
+    const protectedTotalEpisodes = Math.max(
+      latestEpisodes,
+      originalTotalEpisodes,
+      record.total_episodes,
+    );
 
     // 2. 继续观看提醒：用户还没看完现有集数（使用保护后的集数）
     const hasContinueWatching = record.index < protectedTotalEpisodes;
-    const remainingEpisodes = hasContinueWatching ? protectedTotalEpisodes - record.index : 0;
+    const remainingEpisodes = hasContinueWatching
+      ? protectedTotalEpisodes - record.index
+      : 0;
 
     // 检查是否为新上映（原始集数为0或很少，现在有集数了）
     const hasNewRelease = originalTotalEpisodes <= 1 && latestEpisodes > 1;
 
     // 如果API返回的集数少于原始记录的集数，说明可能是API缓存问题
     if (latestEpisodes < originalTotalEpisodes) {
-      console.warn(`⚠️ [追番更新] ${record.title} API返回集数(${latestEpisodes})少于原始记录(${originalTotalEpisodes})，可能是API缓存问题`);
+      console.warn(
+        `⚠️ [追番更新] ${record.title} API返回集数(${latestEpisodes})少于原始记录(${originalTotalEpisodes})，可能是API缓存问题`,
+      );
     }
 
     if (hasUpdate) {
-      console.log(`✨ [追番更新] ${record.title} 发现新集数: ${originalTotalEpisodes} -> ${latestEpisodes} 集，新增${newEpisodes}集`);
+      console.log(
+        `✨ [追番更新] ${record.title} 发现新集数: ${originalTotalEpisodes} -> ${latestEpisodes} 集，新增${newEpisodes}集`,
+      );
 
       if (latestEpisodes > record.total_episodes) {
-        console.log(`📊 [追番更新] 检测到集数差异: ${record.title} 播放记录${record.total_episodes}集 < API最新${latestEpisodes}集`);
-        console.log(`✅ [追番更新] 已记录新集数信息，等待用户实际观看时自动同步`);
+        console.log(
+          `📊 [追番更新] 检测到集数差异: ${record.title} 播放记录${record.total_episodes}集 < API最新${latestEpisodes}集`,
+        );
+        console.log(
+          `✅ [追番更新] 已记录新集数信息，等待用户实际观看时自动同步`,
+        );
       }
     }
 
     if (hasContinueWatching) {
-      console.log(`📺 [追番更新] ${record.title} 继续观看提醒: 当前第${record.index}集，共${protectedTotalEpisodes}集，还有${remainingEpisodes}集未看`);
+      console.log(
+        `📺 [追番更新] ${record.title} 继续观看提醒: 当前第${record.index}集，共${protectedTotalEpisodes}集，还有${remainingEpisodes}集未看`,
+      );
     }
 
     // 输出详细的检测结果
@@ -212,11 +252,11 @@ async function checkSingleRecordUpdate(
       hasContinueWatching,
       newEpisodes,
       remainingEpisodes,
-      '原始集数': originalTotalEpisodes,
-      '当前播放记录集数': record.total_episodes,
-      'API返回集数': latestEpisodes,
-      '保护后集数': protectedTotalEpisodes,
-      '当前观看到': record.index
+      原始集数: originalTotalEpisodes,
+      当前播放记录集数: record.total_episodes,
+      API返回集数: latestEpisodes,
+      保护后集数: protectedTotalEpisodes,
+      当前观看到: record.index,
     });
 
     return {
@@ -246,6 +286,28 @@ async function checkSingleRecordUpdate(
 // Hook: 检查追番更新
 // ============================================================================
 
+// 受限并发映射：避免几十个 /api/detail 请求同时发出，
+// 占满浏览器连接并拖慢首屏（每个 detail 请求服务端会向各采集源 fan-out）
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const runners = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (next < items.length) {
+        const index = next++;
+        results[index] = await worker(items[index], index);
+      }
+    },
+  );
+  await Promise.all(runners);
+  return results;
+}
+
 /**
  * 检查追番更新
  *
@@ -269,7 +331,10 @@ export function useWatchingUpdatesQuery(options?: {
   const queryClient = useQueryClient();
 
   return useQuery({
-    queryKey: ['watchingUpdates', options?.forceRefresh ? Date.now() : 'cached'] as const,
+    queryKey: [
+      'watchingUpdates',
+      options?.forceRefresh ? Date.now() : 'cached',
+    ] as const,
     queryFn: async (): Promise<WatchingUpdate> => {
       console.log('🔄 [追番更新] 开始检查追番更新...');
 
@@ -279,7 +344,7 @@ export function useWatchingUpdatesQuery(options?: {
         queryFn: async () => {
           const response = await fetch('/api/playrecords');
           if (!response.ok) throw new Error('Failed to fetch play records');
-          const data = await response.json() as Record<string, PlayRecord>;
+          const data = (await response.json()) as Record<string, PlayRecord>;
           return Object.entries(data)
             .map(([key, record]) => ({ ...record, key }))
             .sort((a, b) => (b.save_time || 0) - (a.save_time || 0));
@@ -307,7 +372,7 @@ export function useWatchingUpdatesQuery(options?: {
         queryFn: async () => {
           const response = await fetch('/api/reminders');
           if (!response.ok) throw new Error('Failed to fetch reminders');
-          return await response.json() as Record<string, Reminder>;
+          return (await response.json()) as Record<string, Reminder>;
         },
       });
 
@@ -327,103 +392,119 @@ export function useWatchingUpdatesQuery(options?: {
           return record.total_episodes > 1;
         });
 
-        console.log(`🎯 [追番更新] 找到 ${candidateRecords.length} 个可能有更新的剧集`);
+        console.log(
+          `🎯 [追番更新] 找到 ${candidateRecords.length} 个可能有更新的剧集`,
+        );
         if (candidateRecords.length > 0) {
-          console.log('[追番更新] 候选记录详情:', candidateRecords.map(r => ({ title: r.title, index: r.index, total: r.total_episodes })));
+          console.log(
+            '[追番更新] 候选记录详情:',
+            candidateRecords.map((r) => ({
+              title: r.title,
+              index: r.index,
+              total: r.total_episodes,
+            })),
+          );
         }
 
         if (candidateRecords.length > 0) {
-          // 并发检查所有记录的更新状态
-          const updatePromises = candidateRecords.map(async (record) => {
-        try {
-          // 从存储key中解析出videoId
-          const [sourceName, videoId] = record.key.split('+');
+          // 受限并发检查所有记录的更新状态（避免瞬时打满连接）
+          await mapWithConcurrency(candidateRecords, 4, async (record) => {
+            try {
+              // 从存储key中解析出videoId
+              const [sourceName, videoId] = record.key.split('+');
 
-          // 映射数据源名称到 key
-          let sourceKey = sourceName;
-          if (sourceMap) {
-            const mappedSource = sourceMap.get(sourceName);
-            if (mappedSource) {
-              sourceKey = mappedSource;
-              console.log(`[追番更新] 映射数据源: ${sourceName} -> ${sourceKey}`);
+              // 映射数据源名称到 key
+              let sourceKey = sourceName;
+              if (sourceMap) {
+                const mappedSource = sourceMap.get(sourceName);
+                if (mappedSource) {
+                  sourceKey = mappedSource;
+                  console.log(
+                    `[追番更新] 映射数据源: ${sourceName} -> ${sourceKey}`,
+                  );
+                }
+                // 如果找不到映射，说明 sourceName 本身就是 API key，直接使用
+              }
+
+              const updateInfo = await checkSingleRecordUpdate(
+                record,
+                videoId,
+                sourceKey,
+              );
+
+              // 使用从 checkSingleRecordUpdate 返回的 protectedTotalEpisodes（已经包含了保护机制）
+              const protectedTotalEpisodes = updateInfo.latestEpisodes;
+
+              const seriesInfo = {
+                title: record.title,
+                source_name: record.source_name,
+                year: record.year,
+                cover: record.cover,
+                sourceKey,
+                videoId,
+                currentEpisode: record.index,
+                totalEpisodes: protectedTotalEpisodes,
+                hasNewEpisode: updateInfo.hasNewEpisode,
+                hasContinueWatching: updateInfo.hasContinueWatching,
+                hasNewRelease: updateInfo.hasNewRelease,
+                newEpisodes: updateInfo.newEpisodes,
+                remainingEpisodes: updateInfo.remainingEpisodes,
+                latestEpisodes: updateInfo.latestEpisodes,
+                remarks: record.remarks,
+              };
+
+              updatedSeries.push(seriesInfo);
+
+              // 统计更新
+              if (updateInfo.hasNewEpisode) {
+                updatedCount++;
+              }
+              if (updateInfo.hasContinueWatching) {
+                continueWatchingCount++;
+                console.log(
+                  `[追番更新] ${record.title} 计入继续观看计数，当前总数: ${continueWatchingCount}`,
+                );
+              }
+              if (updateInfo.hasNewRelease) {
+                newReleasesCount++;
+              }
+
+              console.log(
+                `[追番更新] ${record.title} 检查结果: hasUpdate=${updateInfo.hasUpdate}, hasContinueWatching=${updateInfo.hasContinueWatching}`,
+              );
+              return seriesInfo;
+            } catch (error) {
+              console.error(`[追番更新] 检查${record.title}更新失败:`, error);
+              // 返回默认状态
+              const [sourceName, videoId] = record.key.split('+');
+              let sourceKey = sourceName;
+              if (sourceMap) {
+                const mappedSource = sourceMap.get(sourceName);
+                if (mappedSource) {
+                  sourceKey = mappedSource;
+                }
+              }
+              const seriesInfo = {
+                title: record.title,
+                source_name: record.source_name,
+                year: record.year,
+                cover: record.cover,
+                sourceKey,
+                videoId,
+                currentEpisode: record.index,
+                totalEpisodes: record.total_episodes,
+                hasNewEpisode: false,
+                hasContinueWatching: false,
+                hasNewRelease: false,
+                newEpisodes: 0,
+                remainingEpisodes: 0,
+                latestEpisodes: record.total_episodes,
+                remarks: record.remarks,
+              };
+              updatedSeries.push(seriesInfo);
+              return seriesInfo;
             }
-            // 如果找不到映射，说明 sourceName 本身就是 API key，直接使用
-          }
-
-          const updateInfo = await checkSingleRecordUpdate(record, videoId, sourceKey);
-
-          // 使用从 checkSingleRecordUpdate 返回的 protectedTotalEpisodes（已经包含了保护机制）
-          const protectedTotalEpisodes = updateInfo.latestEpisodes;
-
-          const seriesInfo = {
-            title: record.title,
-            source_name: record.source_name,
-            year: record.year,
-            cover: record.cover,
-            sourceKey,
-            videoId,
-            currentEpisode: record.index,
-            totalEpisodes: protectedTotalEpisodes,
-            hasNewEpisode: updateInfo.hasNewEpisode,
-            hasContinueWatching: updateInfo.hasContinueWatching,
-            hasNewRelease: updateInfo.hasNewRelease,
-            newEpisodes: updateInfo.newEpisodes,
-            remainingEpisodes: updateInfo.remainingEpisodes,
-            latestEpisodes: updateInfo.latestEpisodes,
-            remarks: record.remarks
-          };
-
-          updatedSeries.push(seriesInfo);
-
-          // 统计更新
-          if (updateInfo.hasNewEpisode) {
-            updatedCount++;
-          }
-          if (updateInfo.hasContinueWatching) {
-            continueWatchingCount++;
-            console.log(`[追番更新] ${record.title} 计入继续观看计数，当前总数: ${continueWatchingCount}`);
-          }
-          if (updateInfo.hasNewRelease) {
-            newReleasesCount++;
-          }
-
-          console.log(`[追番更新] ${record.title} 检查结果: hasUpdate=${updateInfo.hasUpdate}, hasContinueWatching=${updateInfo.hasContinueWatching}`);
-          return seriesInfo;
-        } catch (error) {
-          console.error(`[追番更新] 检查${record.title}更新失败:`, error);
-          // 返回默认状态
-          const [sourceName, videoId] = record.key.split('+');
-          let sourceKey = sourceName;
-          if (sourceMap) {
-            const mappedSource = sourceMap.get(sourceName);
-            if (mappedSource) {
-              sourceKey = mappedSource;
-            }
-          }
-          const seriesInfo = {
-            title: record.title,
-            source_name: record.source_name,
-            year: record.year,
-            cover: record.cover,
-            sourceKey,
-            videoId,
-            currentEpisode: record.index,
-            totalEpisodes: record.total_episodes,
-            hasNewEpisode: false,
-            hasContinueWatching: false,
-            hasNewRelease: false,
-            newEpisodes: 0,
-            remainingEpisodes: 0,
-            latestEpisodes: record.total_episodes,
-            remarks: record.remarks
-          };
-          updatedSeries.push(seriesInfo);
-          return seriesInfo;
-        }
-      });
-
-          // 等待所有检查完成
-          await Promise.all(updatePromises);
+          });
         }
       }
 
@@ -432,12 +513,14 @@ export function useWatchingUpdatesQuery(options?: {
       try {
         if (reminders) {
           // 使用 Asia/Shanghai 时区获取今天的日期
-          const today = new Date().toLocaleDateString('zh-CN', {
-            timeZone: 'Asia/Shanghai',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit'
-          }).replace(/\//g, '-'); // 转换为 YYYY-MM-DD 格式
+          const today = new Date()
+            .toLocaleDateString('zh-CN', {
+              timeZone: 'Asia/Shanghai',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            })
+            .replace(/\//g, '-'); // 转换为 YYYY-MM-DD 格式
 
           // 筛选有releaseDate且已上映的想看内容
           const newReleases = Object.entries(reminders)
@@ -449,9 +532,11 @@ export function useWatchingUpdatesQuery(options?: {
               if (reminder.releaseDate > today) return false;
 
               // 检查是否已经在播放记录中（避免重复）
-              const isInPlayRecords = playRecordsArray && playRecordsArray.some(r =>
-                r.title === reminder.title && r.year === reminder.year
-              );
+              const isInPlayRecords =
+                playRecordsArray &&
+                playRecordsArray.some(
+                  (r) => r.title === reminder.title && r.year === reminder.year,
+                );
 
               return !isInPlayRecords;
             })
@@ -467,9 +552,19 @@ export function useWatchingUpdatesQuery(options?: {
                   // 已上映：计算天数差
                   const releaseParts = releaseDate.split('-').map(Number);
                   const todayParts = today.split('-').map(Number);
-                  const releaseMs = new Date(releaseParts[0], releaseParts[1] - 1, releaseParts[2]).getTime();
-                  const todayMs = new Date(todayParts[0], todayParts[1] - 1, todayParts[2]).getTime();
-                  const daysAgo = Math.floor((todayMs - releaseMs) / (1000 * 60 * 60 * 24));
+                  const releaseMs = new Date(
+                    releaseParts[0],
+                    releaseParts[1] - 1,
+                    releaseParts[2],
+                  ).getTime();
+                  const todayMs = new Date(
+                    todayParts[0],
+                    todayParts[1] - 1,
+                    todayParts[2],
+                  ).getTime();
+                  const daysAgo = Math.floor(
+                    (todayMs - releaseMs) / (1000 * 60 * 60 * 24),
+                  );
                   remarksText = `已上映${daysAgo}天`;
                 } else if (releaseDate === today) {
                   remarksText = '今日上映';
@@ -497,7 +592,9 @@ export function useWatchingUpdatesQuery(options?: {
             });
 
           if (newReleases.length > 0) {
-            console.log(`🎬 [追番更新] 发现 ${newReleases.length} 部新上映的想看内容`);
+            console.log(
+              `🎬 [追番更新] 发现 ${newReleases.length} 部新上映的想看内容`,
+            );
             updatedSeries.push(...newReleases);
             newReleasesCount = newReleases.length;
           } else {
@@ -531,9 +628,12 @@ export function useWatchingUpdatesQuery(options?: {
         return a.title.localeCompare(b.title, 'zh-CN');
       });
 
-      const hasUpdates = updatedCount > 0 || continueWatchingCount > 0 || newReleasesCount > 0;
+      const hasUpdates =
+        updatedCount > 0 || continueWatchingCount > 0 || newReleasesCount > 0;
 
-      console.log(`✅ [追番更新] 检查完成: ${hasUpdates ? `发现${newReleasesCount}部新上映，${updatedCount}部剧集有新集数更新，${continueWatchingCount}部剧集需要继续观看` : '暂无更新'}`);
+      console.log(
+        `✅ [追番更新] 检查完成: ${hasUpdates ? `发现${newReleasesCount}部新上映，${updatedCount}部剧集有新集数更新，${continueWatchingCount}部剧集需要继续观看` : '暂无更新'}`,
+      );
 
       const result = {
         hasUpdates,
@@ -547,7 +647,10 @@ export function useWatchingUpdatesQuery(options?: {
       // 持久化到 localStorage（兼容旧实现的缓存机制）
       try {
         if (typeof window !== 'undefined' && localStorage) {
-          localStorage.setItem(WATCHING_UPDATES_CACHE_KEY, JSON.stringify(result));
+          localStorage.setItem(
+            WATCHING_UPDATES_CACHE_KEY,
+            JSON.stringify(result),
+          );
           console.log('[追番更新] 结果已保存到 localStorage');
         }
       } catch (error) {
@@ -596,17 +699,17 @@ export function useRefreshWatchingUpdates() {
     // 强制刷新播放记录（type: 'all' 确保即使 inactive 也会刷新）
     queryClient.invalidateQueries({
       queryKey: ['playRecords'],
-      refetchType: 'all'
+      refetchType: 'all',
     });
     // 强制刷新想看列表（用于检查新上映）
     queryClient.invalidateQueries({
       queryKey: ['reminders'],
-      refetchType: 'all'
+      refetchType: 'all',
     });
     // 强制刷新追番更新（type: 'all' 确保即使 inactive 也会刷新）
     queryClient.invalidateQueries({
       queryKey: ['watchingUpdates'],
-      refetchType: 'all'
+      refetchType: 'all',
     });
   };
 }
