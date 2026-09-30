@@ -5261,11 +5261,14 @@ function PlayPageClient() {
                   // 播放器初始化中断（诊断堆栈：createObjectURL@[native code]）。
                   // iOS 全系改用主线程模式绕开；Apple 芯片性能足以承载解封装。
                   enableWorker: !localIsIOS13,
-                  // Safari 26.x（iPad/iPhone）的 ManagedMediaSource attach
-                  // 路径（URL.createObjectURL(mms)）间歇性抛 "Type error"
-                  // → 播放器初始化中断。有传统 MediaSource 时强制使用
-                  // （与 Chrome 同款稳定路径），仅 MMS-only 设备回落 MMS。
-                  preferManagedMediaSource: false,
+                  // Safari 26 正式版（iPad/iPhone）的传统 MediaSource 存在
+                  // 视频渲染 bug：音频轨正常、进度条走、画面黑（视频轨解码
+                  // 器不输出帧，实测 26.2）。必须用 ManagedMediaSource 才
+                  // 正常渲染。旧版为绕 createObjectURL(mms) 间歇 "Type
+                  // error" 强制传统 MSE 反而触发黑屏。现恢复 MMS 优先：
+                  // attach 抛 Type error 时由外层 catch 回退原生 HLS
+                  // （video.src = 本站 m3u8 代理，稳定且带服务端去广告）。
+                  preferManagedMediaSource: true,
                   // 关闭低延迟模式以改善点播体验 - Issue #194
                   // HLS.js 默认 lowLatencyMode: true，主要为 LL-HLS 直播流设计
                   // 点播场景下会导致：缓冲区过小、网络波动时容易卡顿、CPU 负担增加
