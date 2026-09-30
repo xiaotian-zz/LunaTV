@@ -5402,7 +5402,14 @@ function PlayPageClient() {
                     : {}),
                 });
 
-                hls.loadSource(url);
+                // 🎯 主路径改走本站 m3u8 代理：服务端广告过滤无条件生效，
+                // 不再依赖各设备本地"去广告"开关（localStorage 按设备隔离，
+                // 曾导致 iPad 上客户端过滤被关闭而出广告）。
+                const initialUrl = isFirstPartyM3u8Proxy(url)
+                  ? url
+                  : applyFirstPartyM3u8Proxy(url);
+                (video as any)._currentHlsUrl = initialUrl;
+                hls.loadSource(initialUrl);
                 hls.attachMedia(video);
                 video.hls = hls;
               } catch (err) {
@@ -5415,7 +5422,9 @@ function PlayPageClient() {
                 }
                 (video as any).hls = undefined;
                 video.removeAttribute('crossorigin');
-                video.src = `/api/proxy/m3u8?url=${encodeURIComponent(url)}`;
+                video.src = isFirstPartyM3u8Proxy(url)
+                  ? url
+                  : applyFirstPartyM3u8Proxy(url);
                 return;
               }
 
@@ -5503,6 +5512,31 @@ function PlayPageClient() {
               // 返回 false 表示所有降级手段已用尽。
               const tryFallbackOrGiveUp = (): boolean => {
                 const activeUrl = (video as any)._currentHlsUrl || url;
+
+                // 🛡 主路径即是第一方代理（服务端过滤）而代理本身故障时，
+                // 解出原始地址直连，避免整条降级链被跳过导致无法播放。
+                if (
+                  !(video as any)._firstPartyProxyFallbackDone &&
+                  isFirstPartyM3u8Proxy(activeUrl)
+                ) {
+                  let directUrl: string | null = null;
+                  try {
+                    directUrl = new URL(
+                      activeUrl,
+                      window.location.origin,
+                    ).searchParams.get('url');
+                  } catch {
+                    /* 解析失败按无降级处理 */
+                  }
+                  if (directUrl) {
+                    console.warn('第一方代理错误，降级为直连:', directUrl);
+                    (video as any)._firstPartyProxyFallbackDone = true;
+                    (video as any)._currentHlsUrl = directUrl;
+                    (video as any)._consecutiveNetworkErrorCount = 0;
+                    hls.loadSource(directUrl);
+                    return true;
+                  }
+                }
 
                 // ☁️ Worker 代理请求失败（超时/502/畸形响应等）时，自动降级到直连原始地址
                 const rawUrl = !(video as any)._proxyFallbackDone

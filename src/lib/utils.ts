@@ -81,16 +81,16 @@ const devicePerformance =
 
 // 导出设备检测结果供其他模块使用
 export {
+  devicePerformance,
+  getDevicePerformanceLevel,
+  isAndroid,
   isIOS,
   isIOS13Plus,
   isIPad,
-  isAndroid,
   isMobile,
-  isTablet,
   isSafari,
+  isTablet,
   isWebKit,
-  devicePerformance,
-  getDevicePerformanceLevel,
 };
 
 function getBangumiImageProxyConfig(): {
@@ -391,7 +391,10 @@ export function stripVideoPlayProxy(url: string): string | null {
 // 与 applyVideoPlayProxy 的外部 Worker 相互独立，不依赖 VideoProxyConfig 是否启用。
 export function applyFirstPartyM3u8Proxy(url: string): string {
   if (!url || typeof window === 'undefined') return url;
-  return `/api/proxy/m3u8?url=${encodeURIComponent(url)}`;
+  // 显式带上当前页面协议（nginx 反代下服务端 x-forwarded-proto 不可靠，
+  // 不传时代理会回退 http，导致 https 页面混合内容被浏览器拦截）
+  const proto = window.location.protocol.replace(':', '');
+  return `/api/proxy/m3u8?url=${encodeURIComponent(url)}&proto=${proto}`;
 }
 
 // 判断某地址是否已经指向本站的第一方 m3u8 代理，避免重复包裹
