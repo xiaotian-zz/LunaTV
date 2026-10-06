@@ -16,13 +16,13 @@ export async function POST(request: NextRequest) {
       {
         error: '不支持本地存储模式修改密码',
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
   try {
     const body = await request.json();
-    const { newPassword } = body;
+    const { oldPassword, newPassword } = body;
 
     // 获取认证信息
     const authInfo = getAuthInfoFromCookie(request);
@@ -41,8 +41,25 @@ export async function POST(request: NextRequest) {
     if (username === process.env.USERNAME) {
       return NextResponse.json(
         { error: '站长不能通过此接口修改密码' },
-        { status: 403 }
+        { status: 403 },
       );
+    }
+
+    // 验证旧密码：防止会话 cookie 被盗后直接改密持久化控制账号
+    if (!oldPassword || typeof oldPassword !== 'string') {
+      return NextResponse.json({ error: '旧密码不得为空' }, { status: 400 });
+    }
+    const isOldPasswordValid = await db.verifyUser(username, oldPassword);
+    if (!isOldPasswordValid) {
+      return NextResponse.json({ error: '旧密码错误' }, { status: 400 });
+    }
+
+    // 验证新密码（与注册规则一致：至少6位）
+    if (!newPassword || typeof newPassword !== 'string') {
+      return NextResponse.json({ error: '新密码不得为空' }, { status: 400 });
+    }
+    if (newPassword.length < 6) {
+      return NextResponse.json({ error: '密码长度至少6位' }, { status: 400 });
     }
 
     // 修改密码
@@ -56,7 +73,7 @@ export async function POST(request: NextRequest) {
         error: '修改密码失败',
         details: (error as Error).message,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

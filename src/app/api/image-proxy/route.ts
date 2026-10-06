@@ -8,7 +8,10 @@ export const runtime = 'nodejs';
 // https agent with rejectUnauthorized: false for expired-cert image CDNs
 const insecureHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-async function fetchWithInsecureHttps(imageUrl: string, fetchHeaders: HeadersInit): Promise<Response> {
+async function fetchWithInsecureHttps(
+  imageUrl: string,
+  fetchHeaders: HeadersInit,
+): Promise<Response> {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(imageUrl);
     const options = {
@@ -23,10 +26,12 @@ async function fetchWithInsecureHttps(imageUrl: string, fetchHeaders: HeadersIni
       res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => {
         const body = Buffer.concat(chunks);
-        resolve(new Response(body, {
-          status: res.statusCode ?? 200,
-          headers: res.headers as Record<string, string>,
-        }));
+        resolve(
+          new Response(body, {
+            status: res.statusCode ?? 200,
+            headers: res.headers as Record<string, string>,
+          }),
+        );
       });
     });
     req.on('error', reject);
@@ -50,7 +55,7 @@ export async function GET(request: Request) {
     console.error('[Image Proxy] SSRF validation failed:', error);
     return NextResponse.json(
       { error: 'Invalid or blocked URL' },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
@@ -65,13 +70,14 @@ export async function GET(request: Request) {
 
     // 构建请求头
     const fetchHeaders: HeadersInit = {
-      'Referer': sourceOrigin + '/',
-      'Origin': sourceOrigin,
+      Referer: sourceOrigin + '/',
+      Origin: sourceOrigin,
       'User-Agent': DEFAULT_USER_AGENT,
-      'Accept': 'image/avif,image/webp,image/jxl,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      Accept:
+        'image/avif,image/webp,image/jxl,image/apng,image/svg+xml,image/*,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       'Accept-Encoding': 'gzip, deflate, br',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
     };
 
     let imageResponse: Response;
@@ -82,7 +88,12 @@ export async function GET(request: Request) {
       });
     } catch (fetchError: any) {
       // SSL cert error (e.g. expired cert) - retry with rejectUnauthorized: false
-      if (imageUrl.startsWith('https://') && (fetchError.code === 'CERT_HAS_EXPIRED' || fetchError.cause?.code === 'CERT_HAS_EXPIRED' || fetchError.message?.includes('certificate'))) {
+      if (
+        imageUrl.startsWith('https://') &&
+        (fetchError.code === 'CERT_HAS_EXPIRED' ||
+          fetchError.cause?.code === 'CERT_HAS_EXPIRED' ||
+          fetchError.message?.includes('certificate'))
+      ) {
         imageResponse = await fetchWithInsecureHttps(imageUrl, fetchHeaders);
       } else {
         throw fetchError;
@@ -96,21 +107,43 @@ export async function GET(request: Request) {
         {
           error: 'Failed to fetch image',
           status: imageResponse.status,
-          statusText: imageResponse.statusText
+          statusText: imageResponse.statusText,
         },
-        { status: imageResponse.status }
+        { status: imageResponse.status },
       );
       // 错误响应不缓存，避免缓存失效的图片链接
-      errorResponse.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      errorResponse.headers.set(
+        'Cache-Control',
+        'no-cache, no-store, must-revalidate',
+      );
       return errorResponse;
     }
 
     const contentType = imageResponse.headers.get('content-type');
 
+    // 🛡️ MIME 检查：只放行图片内容（无法识别的 octet-stream/空值保守放行），
+    // 防止上游返回 HTML 等文本在本站域下渲染（同域脚本执行向量），
+    // 同时避免代理被当作通用文件中转滥用
+    if (
+      contentType &&
+      !contentType.startsWith('image/') &&
+      !contentType.includes('octet-stream')
+    ) {
+      const blockedResponse = NextResponse.json(
+        { error: `Blocked non-image content type: ${contentType}` },
+        { status: 403 },
+      );
+      blockedResponse.headers.set(
+        'Cache-Control',
+        'no-cache, no-store, must-revalidate',
+      );
+      return blockedResponse;
+    }
+
     if (!imageResponse.body) {
       return NextResponse.json(
         { error: 'Image response has no body' },
-        { status: 500 }
+        { status: 500 },
       );
     }
 
@@ -127,7 +160,10 @@ export async function GET(request: Request) {
     }
 
     // 设置缓存头 - 缓存7天（604800秒），允许重新验证
-    headers.set('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
+    headers.set(
+      'Cache-Control',
+      'public, max-age=604800, stale-while-revalidate=86400',
+    );
     headers.set('CDN-Cache-Control', 'public, s-maxage=604800');
     headers.set('Vercel-CDN-Cache-Control', 'public, s-maxage=604800');
     headers.set('Netlify-Vary', 'query');
@@ -148,14 +184,14 @@ export async function GET(request: Request) {
     if (error.name === 'AbortError') {
       return NextResponse.json(
         { error: 'Image fetch timeout (15s)' },
-        { status: 504 }
+        { status: 504 },
       );
     }
 
     console.error('[Image Proxy] Error fetching image:', error.message);
     return NextResponse.json(
       { error: 'Error fetching image', details: error.message },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -168,6 +204,6 @@ export async function OPTIONS() {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
-    }
+    },
   });
 }
