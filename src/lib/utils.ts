@@ -1,5 +1,5 @@
 import { type ClassValue, clsx } from 'clsx';
-import he from 'he';
+import { decode as heDecode } from 'he';
 import Hls from 'hls.js';
 import { twMerge } from 'tailwind-merge';
 
@@ -755,7 +755,7 @@ export function cleanHtmlTags(text: string): string {
     .trim(); // 去掉首尾空格
 
   // 使用 he 库解码 HTML 实体
-  return he.decode(cleanedText);
+  return heDecode(cleanedText);
 }
 
 /**
