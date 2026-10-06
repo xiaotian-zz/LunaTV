@@ -1,12 +1,11 @@
 overrides:
-  # ESLint 10 需要新版 scope-manager API（addGlobals），仅 canary 提供；
-  # 稳定版 8.70.1 声明的 peer 只到 eslint 9
-  'typescript-eslint': 8.70.2-alpha.10
-  '@typescript-eslint/parser': 8.70.2-alpha.10
-  '@typescript-eslint/eslint-plugin': 8.70.2-alpha.10
-  '@typescript-eslint/utils': 8.70.2-alpha.10
-  '@typescript-eslint/typescript-estree': 8.70.2-alpha.10
+  # 8.71.1 稳定版已支持 ESLint 10（scope-manager addGlobals）
+  '@typescript-eslint/eslint-plugin': 8.71.1
+  '@typescript-eslint/parser': 8.71.1
+  '@typescript-eslint/typescript-estree': 8.71.1
+  '@typescript-eslint/utils': 8.71.1
+  typescript-eslint: 8.71.1
 
 patchedDependencies:
   mdast-util-gfm-autolink-literal@2.0.1: patches/mdast-util-gfm-autolink-literal@2.0.1.patch
-  next@16.3.6: patches/next@16.3.6.patch
+  next@16.3.8: patches/next@16.3.8.patch
