@@ -247,7 +247,7 @@ function isIPTrusted(clientIP: string, trustedIPs: string[]): boolean {
 }
 
 // 生成信任网络的自动登录 cookie
-function generateTrustedAuthCookie(request: NextRequest): NextResponse {
+async function generateTrustedAuthCookie(request: NextRequest): Promise<NextResponse> {
   const response = NextResponse.next();
 
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
