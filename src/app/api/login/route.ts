@@ -38,7 +38,7 @@ function normalizeUsername(username?: string): string | undefined {
 function getLoginRateLimitKey(
   ip: string,
   username?: string,
-  includeIp = true
+  includeIp = true,
 ): string {
   const normalizedUsername = normalizeUsername(username);
   if (normalizedUsername && includeIp) {
@@ -55,7 +55,7 @@ async function getRateLimitCount(key: string): Promise<number> {
 
 async function isLoginRateLimited(
   ip: string,
-  username?: string
+  username?: string,
 ): Promise<boolean> {
   if (STORAGE_TYPE === 'localstorage') return false;
 
@@ -65,7 +65,8 @@ async function isLoginRateLimited(
       : 0;
     const ipCount = await getRateLimitCount(getLoginRateLimitKey(ip));
     return (
-      accountIpCount >= LOGIN_ACCOUNT_RATE_LIMIT || ipCount >= LOGIN_IP_RATE_LIMIT
+      accountIpCount >= LOGIN_ACCOUNT_RATE_LIMIT ||
+      ipCount >= LOGIN_IP_RATE_LIMIT
     );
   } catch (error) {
     console.error('登录限流检查失败:', error);
@@ -74,21 +75,42 @@ async function isLoginRateLimited(
   }
 }
 
-async function recordLoginFailure(ip: string, username?: string): Promise<void> {
+async function recordLoginFailure(
+  ip: string,
+  username?: string,
+): Promise<void> {
   if (STORAGE_TYPE === 'localstorage') return;
 
   const keys = Array.from(
-    new Set([getLoginRateLimitKey(ip, username), getLoginRateLimitKey(ip)])
+    new Set([getLoginRateLimitKey(ip, username), getLoginRateLimitKey(ip)]),
   );
   try {
-    const currentCount = (await db.getCache(key)) || 0;
-    await db.setCache(
-      key,
-      currentCount + 1,
-      Math.ceil(LOGIN_RATE_WINDOW_MS / 1000),
-    );
+    for (const key of keys) {
+      const currentCount = (await db.getCache(key)) || 0;
+      await db.setCache(
+        key,
+        currentCount + 1,
+        Math.ceil(LOGIN_RATE_WINDOW_MS / 1000),
+      );
+    }
   } catch (error) {
     console.error('登录失败计数写入失败:', error);
+  }
+}
+
+async function clearLoginFailures(
+  ip: string,
+  username?: string,
+): Promise<void> {
+  if (STORAGE_TYPE === 'localstorage') return;
+
+  const keys = Array.from(
+    new Set([getLoginRateLimitKey(ip, username), getLoginRateLimitKey(ip)]),
+  );
+  try {
+    await Promise.all(keys.map((key) => db.deleteCache(key)));
+  } catch (error) {
+    console.error('清除登录失败计数失败:', error);
   }
 }
 
@@ -285,7 +307,7 @@ export async function POST(req: NextRequest) {
     if (await isLoginRateLimited(clientIP, username)) {
       return NextResponse.json(
         { error: '登录尝试次数过多，请 30 分钟后再试' },
-        { status: 429 }
+        { status: 429 },
       );
     }
 
