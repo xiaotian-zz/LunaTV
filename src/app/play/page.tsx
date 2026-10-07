@@ -3168,8 +3168,14 @@ function PlayPageClient() {
     //     （实测 yzzy 源 16.5s×4 片，分片全 ≥1.7s，仅靠碎分片特征会漏）
     // 2d. 末尾段：以 DISCONTINUITY 开头直到文件尾（后跟 ENDLIST，
     //     没有第二个 DISCONTINUITY 包夹）的短段 —— 片尾贴片广告
+    // 2e. 片头贴片：首段（第一个 DISCONTINUITY 组）被包夹且总时长 ≤65s、
+    //     分片 ≤10 —— 15/30/60s 标准贴片全部覆盖；上限卡在 OP 片头曲
+    //     （常见 85-90s）之下，避免误删正片片头
+    let firstDiscGroupSeen = false;
     for (let i = 0; i < frags.length; i += 1) {
       if (!frags[i].disc) continue;
+      const isFirstDiscGroup = !firstDiscGroupSeen;
+      firstDiscGroupSeen = true;
       let total = 0;
       let hasTiny = false;
       let count = 0;
@@ -3185,7 +3191,8 @@ function PlayPageClient() {
       const isAdSegment =
         total > 0 &&
         ((enclosed && total <= 90 && hasTiny) || // 2b 碎分片特征
-          (total <= 30 && count <= 8)); // 2c/2d 短插播段（完整包夹或末尾）
+          (total <= 30 && count <= 8) || // 2c/2d 短插播段（完整包夹或末尾）
+          (enclosed && isFirstDiscGroup && total <= 65 && count <= 10)); // 2e 片头贴片
       if (isAdSegment) {
         for (let k = i; k < j; k += 1) drop[k] = true;
       }
@@ -5343,9 +5350,11 @@ function PlayPageClient() {
                     },
                   },
 
-                  /* 自定义loader：仅标准档（无预取）时用广告过滤 loader */
+                  /* 自定义loader：仅标准档（无预取）时用广告过滤 loader。
+                   ⚠️ 过滤强制化（不依赖 enable_blockad 开关）：降级直连源站
+                   m3u8 时服务端过滤够不着，客户端必须兜底删广告行，
+                   否则 iPad 等设备上广告"时有时无" */
                   loader:
-                    blockAdEnabledRef.current &&
                     bufferConfig.prefetchConcurrency <= 1
                       ? CustomHlsJsLoader
                       : Hls.DefaultConfig.loader,
@@ -5361,16 +5370,13 @@ function PlayPageClient() {
                         {
                           transformPlaylist: (body: string) => {
                             let out = body;
-                            // 去广告过滤（开关开启时）。分片 URL 不再在客户端
-                            // 改写为 segment 代理——服务端 m3u8 代理已输出
-                            // 绝对直连 URL（分片直连不绕服务器），客户端
-                            // 过滤只删广告行，保持分片直连性能。
-                            if (blockAdEnabledRef.current) {
-                              try {
-                                out = filterAdsFromM3U8(out);
-                              } catch {
-                                /* 过滤失败保留原始内容 */
-                              }
+                            // 去广告过滤（强制执行，不依赖开关）：服务端 m3u8
+                            // 代理已过滤，但降级直连源站清单时只有这里能删
+                            // 广告行；对已过滤内容幂等，双重过滤无害。
+                            try {
+                              out = filterAdsFromM3U8(out);
+                            } catch {
+                              /* 过滤失败保留原始内容 */
                             }
                             return out;
                           },
