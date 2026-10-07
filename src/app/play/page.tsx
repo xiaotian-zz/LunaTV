@@ -2527,13 +2527,12 @@ function PlayPageClient() {
         console.log('🎵 换集时应用音轨参数:', currentAudioTrackRef.current);
       }
 
-      // ☁️ Emby 源需要自定义鉴权头，不走 Cloudflare Worker 代理；其余源套一层加速
+      // ☁️ Emby 源需要自定义鉴权头，不走代理
       if (!isEmbySource) {
-        newUrl = applyVideoPlayProxy(newUrl);
-
         // 🛡️ 无 MSE 设备（iPhone iOS<17.1 等）由 Safari 原生 HLS 直接播放，
         // 客户端 hls.js 的去广告 loader 不会执行 → 统一改走本站 m3u8 代理，
-        // 由服务端过滤广告；Worker 加速对原生路径无过滤能力，直接跳过
+        // 由服务端过滤广告。不再套 Worker 加速（服务端代理已覆盖该层，
+        // 双层代理只会增加延迟）；有 MSE 设备由 hls.js 主路径统一包第一方代理。
         if (
           newUrl &&
           /^https?:\/\//i.test(newUrl) &&
@@ -2542,8 +2541,11 @@ function PlayPageClient() {
           typeof window.MediaSource === 'undefined' &&
           typeof (window as any).ManagedMediaSource === 'undefined'
         ) {
-          newUrl = `/api/proxy/m3u8?url=${encodeURIComponent(newUrl)}`;
+          newUrl = applyFirstPartyM3u8Proxy(newUrl);
           console.log('🛡️ 无MSE设备：m3u8 走本站代理（服务端去广告）');
+        } else {
+          // 非 m3u8（mp4 等）保留原有 Worker 加速逻辑
+          newUrl = applyVideoPlayProxy(newUrl);
         }
       }
 
@@ -5357,43 +5359,18 @@ function PlayPageClient() {
                         bufferConfig.prefetchConcurrency,
                         Hls.DefaultConfig.loader,
                         {
-                          transformPlaylist: (
-                            body: string,
-                            baseUrl: string,
-                          ) => {
+                          transformPlaylist: (body: string) => {
                             let out = body;
-                            // 1) 去广告过滤（开关开启时）
+                            // 去广告过滤（开关开启时）。分片 URL 不再在客户端
+                            // 改写为 segment 代理——服务端 m3u8 代理已输出
+                            // 绝对直连 URL（分片直连不绕服务器），客户端
+                            // 过滤只删广告行，保持分片直连性能。
                             if (blockAdEnabledRef.current) {
                               try {
                                 out = filterAdsFromM3U8(out);
                               } catch {
                                 /* 过滤失败保留原始内容 */
                               }
-                            }
-                            // 2) 分片 URL 统一改写为本站 segment 代理。
-                            //    m3u8 经 Worker 代理转发时只回传原始内容，
-                            //    分片仍是源站 URL，直连会被封源站的墙全部
-                            //    超时（10s+ 零字节）。统一走本站 /api/proxy/
-                            //    segment 由服务端转发，无论 m3u8 从哪层加载
-                            //    （直连/Worker/第一方代理）都稳定。
-                            try {
-                              const origin = window.location.origin;
-                              out = out
-                                .split('\n')
-                                .map((line: string) => {
-                                  const t = line.trim();
-                                  if (!t || t.startsWith('#')) return line;
-                                  try {
-                                    const abs = new URL(t, baseUrl).toString();
-                                    if (abs.startsWith(origin)) return line;
-                                    return `${origin}/api/proxy/segment?url=${encodeURIComponent(abs)}`;
-                                  } catch {
-                                    return line;
-                                  }
-                                })
-                                .join('\n');
-                            } catch {
-                              /* 改写失败保留原始内容 */
                             }
                             return out;
                           },
@@ -5507,11 +5484,50 @@ function PlayPageClient() {
                 },
               );
 
-              // 依次尝试：Worker 代理 -> 直连 -> 本站第一方代理，每一级只降级一次。
-              // 返回 true 表示已发起下一级 loadSource，调用方不应再做其他恢复动作；
-              // 返回 false 表示所有降级手段已用尽。
-              const tryFallbackOrGiveUp = (): boolean => {
+              // 依次尝试：分片全代理 -> 直连 -> 分片全代理（清单级失败时），
+              // 每一级只降级一次。返回 true 表示已发起下一级 loadSource，
+              // 调用方不应再做其他恢复动作；返回 false 表示所有降级手段已用尽。
+              const tryFallbackOrGiveUp = (
+                errorKind?: 'frag' | 'level' | 'other',
+              ): boolean => {
                 const activeUrl = (video as any)._currentHlsUrl || url;
+
+                // 🚀 分片直连失败降级：m3u8 清单能从本站代理拉到（服务端
+                // 广告过滤正常），但分片直连源站被 403/CORS 拦截/超时——
+                // 切到"分片全代理"模式重载（服务端按 proxySeg=1 把分片
+                // 包成本站 segment 代理）。清单级（level）错误说明是代理
+                // 或源站本身挂了，重载同代理无意义，直接跳过这级。
+                if (
+                  errorKind !== 'level' &&
+                  !(video as any)._segProxyFallbackDone &&
+                  isFirstPartyM3u8Proxy(activeUrl) &&
+                  !activeUrl.includes('proxySeg=1')
+                ) {
+                  let innerUrl: string | null = null;
+                  try {
+                    innerUrl = new URL(
+                      activeUrl,
+                      window.location.origin,
+                    ).searchParams.get('url');
+                  } catch {
+                    /* 解析失败按无降级处理 */
+                  }
+                  if (innerUrl) {
+                    (video as any)._segProxyFallbackDone = true;
+                    const segProxiedUrl = applyFirstPartyM3u8Proxy(
+                      innerUrl,
+                      true,
+                    );
+                    console.warn(
+                      '分片直连失败，降级为分片全代理:',
+                      segProxiedUrl,
+                    );
+                    (video as any)._currentHlsUrl = segProxiedUrl;
+                    (video as any)._consecutiveNetworkErrorCount = 0;
+                    hls.loadSource(segProxiedUrl);
+                    return true;
+                  }
+                }
 
                 // 🛡 主路径即是第一方代理（服务端过滤）而代理本身故障时，
                 // 解出原始地址直连，避免整条降级链被跳过导致无法播放。
@@ -5552,13 +5568,14 @@ function PlayPageClient() {
                   return true;
                 }
                 // 🧭 直连失败时，最后尝试走本站第一方 m3u8 代理——常见于上游要求
-                // 特定 Referer/UA 或不返回 CORS 头，浏览器直连必然失败。
+                // 特定 Referer/UA 或不返回 CORS 头，浏览器直连必然失败；
+                // 此时分片直连同样会失败，直接用分片全代理模式（proxySeg=1）。
                 if (
                   !(video as any)._firstPartyProxyFallbackDone &&
                   !isFirstPartyM3u8Proxy(activeUrl)
                 ) {
                   (video as any)._firstPartyProxyFallbackDone = true;
-                  const proxiedUrl = applyFirstPartyM3u8Proxy(activeUrl);
+                  const proxiedUrl = applyFirstPartyM3u8Proxy(activeUrl, true);
                   console.warn('直连错误，降级为第一方代理:', proxiedUrl);
                   (video as any)._currentHlsUrl = proxiedUrl;
                   (video as any)._consecutiveNetworkErrorCount = 0;
@@ -5655,7 +5672,12 @@ function PlayPageClient() {
                       `连续 ${count} 次非致命网络错误，主动降级:`,
                       data.details,
                     );
-                    tryFallbackOrGiveUp();
+                    tryFallbackOrGiveUp(
+                      data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR ||
+                        data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT
+                        ? 'frag'
+                        : 'level',
+                    );
                   }
                   return;
                 }
@@ -5663,7 +5685,7 @@ function PlayPageClient() {
                 if (data.fatal) {
                   switch (data.type) {
                     case Hls.ErrorTypes.NETWORK_ERROR: {
-                      if (tryFallbackOrGiveUp()) {
+                      if (tryFallbackOrGiveUp('other')) {
                         break;
                       }
                       console.log('网络错误，尝试恢复...');
@@ -5677,7 +5699,7 @@ function PlayPageClient() {
                     default:
                       // OTHER_ERROR / MUX_ERROR / KEY_SYSTEM_ERROR 等非网络类致命错误，
                       // 仍有可能是代理返回了畸形内容导致的解封装失败，降级一次再放弃。
-                      if (tryFallbackOrGiveUp()) {
+                      if (tryFallbackOrGiveUp('other')) {
                         break;
                       }
                       console.log('无法恢复的错误');

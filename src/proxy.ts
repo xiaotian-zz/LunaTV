@@ -7,6 +7,7 @@ import {
   SIGNATURE_FRESHNESS_MS,
   verifyLocalPasswordHash,
 } from '@/lib/auth';
+import { recordSessionActivity } from '@/lib/login-log';
 
 /**
  * proxy.ts（Next.js 16 middleware 新约定）
@@ -247,7 +248,9 @@ function isIPTrusted(clientIP: string, trustedIPs: string[]): boolean {
 }
 
 // 生成信任网络的自动登录 cookie
-async function generateTrustedAuthCookie(request: NextRequest): Promise<NextResponse> {
+async function generateTrustedAuthCookie(
+  request: NextRequest,
+): Promise<NextResponse> {
   const response = NextResponse.next();
 
   const storageType = process.env.NEXT_PUBLIC_STORAGE_TYPE || 'localstorage';
@@ -434,6 +437,10 @@ async function handleAuthentication(
   );
 
   if (isValidSignature) {
+    // 📊 会话活跃日志：cookie 7 天有效期内用户不会重复登录，
+    // 登录日志会缺少当天活跃记录。这里按 用户+天 节流补记
+    // 一条 loginMethod='session' 的日志（内存节流，命中后零开销）。
+    recordSessionActivity(request.headers, authInfo.username).catch(() => {});
     return response || NextResponse.next();
   }
 

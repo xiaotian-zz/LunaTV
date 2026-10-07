@@ -91,10 +91,13 @@ export default function LoginLogsPanel() {
       return labels[provider] || `OIDC(${provider})`;
     }
     if (method === 'telegram') return 'Telegram';
+    if (method === 'session') return '会话活跃';
     return method;
   };
 
   const getMethodBadgeColor = (method?: string) => {
+    if (method === 'session')
+      return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400';
     if (!method || method === 'password')
       return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400';
     if (method === 'telegram')

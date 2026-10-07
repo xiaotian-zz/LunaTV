@@ -188,6 +188,7 @@ export async function GET(request: Request) {
         request,
         allowCORS,
         source,
+        new URL(request.url).searchParams.get('proxySeg') === '1',
       );
 
       const headers = new Headers();
@@ -513,6 +514,7 @@ function rewriteM3U8Content(
   req: Request,
   allowCORS: boolean,
   sourceKey: string | null,
+  proxySeg = false,
 ) {
   // 协议判定：iOS 9 媒体加载栈（AVFoundation）子请求不带 Referer 且不支持
   // scheme-relative URL；Next 又会注入 x-forwarded-proto: http，两者均不可靠。
@@ -556,9 +558,12 @@ function rewriteM3U8Content(
     // 处理 TS 片段 URL 和其他媒体文件
     if (line && !line.startsWith('#')) {
       const resolvedUrl = resolveUrl(baseUrl, line);
-      const proxyUrl = allowCORS
-        ? resolvedUrl
-        : `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`;
+      // 🚀 分片直连优化：分片是流量大头，默认输出绝对直连 URL（不绕服务器，
+      // 速度与源站直连一致）；m3u8 清单本身仍走本站代理（广告过滤生效）。
+      // proxySeg=1（客户端分片直连失败后的降级模式）时改走本站 segment 代理。
+      const proxyUrl = proxySeg
+        ? `${proxyBase}/segment?url=${encodeURIComponent(resolvedUrl)}${sourceParam}`
+        : resolvedUrl;
       rewrittenLines.push(proxyUrl);
       continue;
     }
@@ -632,7 +637,7 @@ function rewriteM3U8Content(
           let resolvedUrl = resolveUrl(baseUrl, nextLine);
           resolvedUrl = substituteVariables(resolvedUrl, variables);
           // 把当前请求的referer参数透传到variant URL，否则下一跳会因为没有Referer被上游拒绝
-          const proxyUrl = `${proxyBase}/m3u8?url=${encodeURIComponent(resolvedUrl)}${sourceParam}${refererParam}`;
+          const proxyUrl = `${proxyBase}/m3u8?url=${encodeURIComponent(resolvedUrl)}${sourceParam}${refererParam}${proxySeg ? '&proxySeg=1' : ''}`;
           rewrittenLines.push(proxyUrl);
         } else {
           rewrittenLines.push(nextLine);

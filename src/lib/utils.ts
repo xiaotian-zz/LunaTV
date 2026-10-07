@@ -406,12 +406,20 @@ export function getArtPlayerType(url: string): string {
 // 直连原始地址失败（上游要求特定 Referer/UA 或不返回 CORS 头）时，最后一层兜底：
 // 改走本站自带的 /api/proxy/m3u8，由服务端代为请求并改写分片/密钥 URI。
 // 与 applyVideoPlayProxy 的外部 Worker 相互独立，不依赖 VideoProxyConfig 是否启用。
-export function applyFirstPartyM3u8Proxy(url: string): string {
+// proxySeg=true 时服务端输出的分片也会包成本站 segment 代理（全代理模式）：
+// 默认分片直连源站（流量大头不绕服务器，速度与直连一致），仅当客户端
+// 分片直连失败（源站 403/CORS 拦截/超时）后降级使用。
+export function applyFirstPartyM3u8Proxy(
+  url: string,
+  proxySeg = false,
+): string {
   if (!url || typeof window === 'undefined') return url;
   // 显式带上当前页面协议（nginx 反代下服务端 x-forwarded-proto 不可靠，
   // 不传时代理会回退 http，导致 https 页面混合内容被浏览器拦截）
   const proto = window.location.protocol.replace(':', '');
-  return `/api/proxy/m3u8?url=${encodeURIComponent(url)}&proto=${proto}`;
+  return `/api/proxy/m3u8?url=${encodeURIComponent(url)}&proto=${proto}${
+    proxySeg ? '&proxySeg=1' : ''
+  }`;
 }
 
 // 判断某地址是否已经指向本站的第一方 m3u8 代理，避免重复包裹
