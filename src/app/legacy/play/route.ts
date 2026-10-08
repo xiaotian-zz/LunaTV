@@ -142,12 +142,16 @@ function playScript(): string {
     if (!u) return '';
     // proto 显式指定协议：iOS 9 媒体栈子请求不带 Referer，
     // 服务端据此把改写的分片/子清单 URL 保持为同协议（全链 https）
+    // proxySeg=1：legacy（iOS 9.3 等）无直连降级能力，且源站证书
+    // （Let's Encrypt/TrustAsia 等）不被 iOS 9.3 信任，必须强制
+    // 服务端输出全代理分片 URL（经本站 segment 代理）
     if (useProxy)
       return (
         '/api/proxy/m3u8?url=' +
         encodeURIComponent(u) +
         '&proto=' +
-        location.protocol.replace(':', '')
+        location.protocol.replace(':', '') +
+        '&proxySeg=1'
       );
     return u;
   }
