@@ -3,7 +3,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import {
+  generateSignature,
   getAuthInfoFromCookie,
+  getLocalPasswordHash,
   SIGNATURE_FRESHNESS_MS,
   verifyLocalPasswordHash,
 } from '@/lib/auth';
@@ -260,11 +262,14 @@ async function generateTrustedAuthCookie(
   const isHttps = request.nextUrl.protocol === 'https:';
 
   if (storageType === 'localstorage') {
-    // localstorage 模式：cookie 只存密码的 HMAC 哈希（与 generateAuthCookie 一致）
+    // localstorage 模式：cookie 存密码的真实 HMAC 哈希（与 generateAuthCookie
+    // 一致，不用 placeholder）。这样客户端 IP 变化（动态宽带/换网络）离开
+    // 信任网络后，仍能通过常规哈希比对放行，不再强制重新登录
     const authInfo = {
-      password: process.env.PASSWORD
-        ? 'trusted-network-placeholder'
-        : undefined,
+      password:
+        process.env.PASSWORD && (await getLocalPasswordHash()) !== null
+          ? await getLocalPasswordHash()
+          : undefined,
       trustedNetwork: true,
       loginTime: Date.now(),
     };
@@ -275,13 +280,24 @@ async function generateTrustedAuthCookie(
       maxAge: 7 * 24 * 60 * 60, // 7 天
     });
   } else {
-    // 数据库模式：设置受信网络标记 cookie（无签名，仅当受信网络匹配时才发放，
-    // 后续请求靠 trustedNetwork 标记放行）
+    // 数据库模式：除受信网络标记外，同时生成与登录等价的有效签名。
+    // 关键修复：客户端 IP 变化后不再匹配信任 IP 列表时，请求会落到
+    // 常规签名验证路径——旧实现 cookie 无 signature，签名验证必然
+    // 失败导致强制重新登录；现在带上有效签名（HMAC(username:timestamp)），
+    // 签名校验不依赖 IP，IP 变化后依然放行
+    const timestamp = Date.now();
+    const signature = process.env.PASSWORD
+      ? await generateSignature(
+          `${username}:${timestamp}`,
+          process.env.PASSWORD,
+        )
+      : undefined;
     const authInfo = {
       username,
       trustedNetwork: true,
-      timestamp: Date.now(),
-      loginTime: Date.now(),
+      signature,
+      timestamp,
+      loginTime: timestamp,
       role: 'owner',
     };
     response.cookies.set('user_auth', JSON.stringify(authInfo), {
