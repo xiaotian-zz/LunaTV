@@ -7,11 +7,32 @@ import { DEFAULT_USER_AGENT } from '@/lib/user-agent';
 
 export const runtime = 'nodejs';
 
+// 安全加固：关闭实体处理以规避 fast-xml-parser 2026 实体扩展类 CVE
+// （CVE-2026-26278 / CVE-2026-25128 / CVE-2026-27942 / CVE-2026-25896），
+// 基础实体改由下方 decodeXmlEntities 手动展开（带范围校验，防实体轰炸）
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
   textNodeName: '_',
+  processEntities: false,
 });
+
+function decodeXmlEntities(input: string): string {
+  return input
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, hex: string) => {
+      const code = parseInt(hex, 16);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+    })
+    .replace(/&#(\d+);/g, (m, dec: string) => {
+      const code = Number(dec);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+    })
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
 
 const asArray = (value: any): any[] =>
   Array.isArray(value) ? value : value == null ? [] : [value];
@@ -20,8 +41,10 @@ const pickText = (value: any): string => {
   if (value === undefined || value === null) return '';
   if (Array.isArray(value)) return pickText(value[0]);
   if (typeof value === 'object')
-    return String(value._ ?? value['@_url'] ?? value['@_href'] ?? '');
-  return String(value);
+    return decodeXmlEntities(
+      String(value._ ?? value['@_url'] ?? value['@_href'] ?? ''),
+    );
+  return decodeXmlEntities(String(value));
 };
 
 /**
