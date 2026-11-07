@@ -9,4 +9,4 @@ overrides:
 patchedDependencies:
   artplayer@5.4.0: patches/artplayer@5.4.0.patch
   mdast-util-gfm-autolink-literal@2.0.1: patches/mdast-util-gfm-autolink-literal@2.0.1.patch
-  next@16.4.3: patches/next@16.4.3.patch
+  next@16.4.5: patches/next@16.4.5.patch
