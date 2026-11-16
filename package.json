@@ -16,7 +16,7 @@
     "gen:manifest": "node scripts/generate-manifest.js",
     "edgeone:build": "node scripts/edgeone-build.mjs",
     "postbuild": "echo 'Build completed - sitemap generation disabled'",
-    "prepare": "husky install"
+    "prepare": "husky"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
